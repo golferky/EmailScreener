@@ -12,6 +12,8 @@ Public Class Emails
     Dim dtEmails As DataTable
     Public sPgm As String = System.Diagnostics.Process.GetCurrentProcess().ProcessName
     Dim eUtil As New eUtilities
+    Private WithEvents keepAliveTimer As New Windows.Forms.Timer With {.Interval = 240000}
+    Private keepAliveBusy As Boolean = False
 
     Private Sub Emails_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         loadscreen()
@@ -81,6 +83,7 @@ Public Class Emails
         End If
     End Sub
     Sub GetUnread()
+        keepAliveBusy = True
         ToolStrip.Visible = True
         Dim imessagecount = 0
         btnSave.Visible = False
@@ -121,6 +124,7 @@ l1:
                 If imessagecount = 0 Then
                     tsStatusText.Text = $"{Now()}-No messages to process"
                     MessageBox.Show($"No messages to process", $"{sPgm}", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    keepAliveBusy = False
                     Exit Sub
                 End If
                 For i As Integer = 0 To uids.Count - 1
@@ -193,6 +197,7 @@ l1:
             End If
         Next
         'dgvEmails.Columns("Spam").Visible = False
+        keepAliveBusy = False
     End Sub
     Sub getJBulk()
         Dim sthisfolder As IMailFolder = Nothing
@@ -358,6 +363,10 @@ l1:
         If eUtil.conn.State = ConnectionState.Open Then
             eUtil.conn.Close()
         End If
+        keepAliveTimer.Stop()
+        If client IsNot Nothing AndAlso client.IsConnected Then
+            client.Disconnect(True)
+        End If
     End Sub
 
     Private Sub cbSelectAll_CheckedChanged(sender As Object, e As EventArgs) Handles cbSelectAll.CheckedChanged
@@ -412,11 +421,44 @@ l1:
         If client.IsConnected Then
             tbMailClient.BackColor = Color.LightGreen
             btnConnect.Visible = False
+            StartKeepAlive()
             btnRefreshGrid_Click(sender, e)
         Else
             tbMailClient.BackColor = Color.Red
         End If
 
+    End Sub
+
+    Private Sub StartKeepAlive()
+        keepAliveTimer.Stop()
+        keepAliveTimer.Start()
+        UpdatetsStatusText($"Keep alive started for {eUtil.sThisEmailUser}")
+    End Sub
+
+    Private Sub keepAliveTimer_Tick(sender As Object, e As EventArgs) Handles keepAliveTimer.Tick
+        If keepAliveBusy Then Exit Sub
+        keepAliveBusy = True
+
+        Try
+            If client Is Nothing OrElse Not client.IsConnected Then
+                client = eUtil.Connect()
+                If client Is Nothing OrElse Not client.IsConnected Then
+                    UpdatetsStatusText($"Keep alive reconnect failed at {Now:t}")
+                    Exit Sub
+                End If
+            End If
+
+            If Not client.IsAuthenticated Then
+                UpdatetsStatusText(eUtil.Authenticate())
+            End If
+
+            client.NoOp()
+            UpdatetsStatusText($"Keep alive sent at {Now:t}")
+        Catch ex As Exception
+            UpdatetsStatusText($"Keep alive failed at {Now:t}: {ex.Message}")
+        Finally
+            keepAliveBusy = False
+        End Try
     End Sub
 
     Private Sub cmbEmailClients_SelectedIndexChanged(sender As Object, e As EventArgs) Handles cmbEmailClients.SelectedIndexChanged
