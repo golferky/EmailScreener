@@ -164,8 +164,16 @@ DateAdded,D,,N,
             'BuildTables()
             'UpdateEmailTbl.ShowNamespaces(sThisEmailService, sThisEmailUser, sThisEmailPassword)
 
-            'client = New ImapClient(New ProtocolLogger($"{sLogPath}imap.log"))
-            client = New ImapClient(New ProtocolLogger($"{sLogPath}imap.log"))
+            If Not Directory.Exists(sLogPath) Then
+                Directory.CreateDirectory(sLogPath)
+            End If
+
+            If client IsNot Nothing Then
+                client.Dispose()
+            End If
+
+            Dim imapLogFile = $"{sLogPath}imap_{Process.GetCurrentProcess().Id}_{DateTime.Now:yyyyMMdd_HHmmss_fff}.log"
+            client = New ImapClient(New ProtocolLogger(imapLogFile))
             'setup yahoo Generate App Password called Emailscreener and copy that password and paste here
             client.Connect(sThisEmailService, 993, SecureSocketOptions.SslOnConnect)
             Return client '$"Connected to {sThisEmailService} for User {sThisEmailUser}"
