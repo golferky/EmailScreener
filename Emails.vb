@@ -95,8 +95,8 @@ Public Class Emails
 
             Dim j As Integer = 1
 l1:
-            If Not client.IsConnected Then
-                eUtil.Connect()
+            If Not IsClientConnected() Then
+                client = eUtil.Connect()
                 Application.DoEvents()
                 eUtil.Authenticate()
                 Application.DoEvents()
@@ -153,7 +153,7 @@ l1:
                     'Debug.Print("You have {0} unread message(s).", uids.Count - i)
                     If dtEmails.Rows.Count = 0 Then Continue For
                     If j Mod 500 = 0 Then
-                        client.Disconnect(True)
+                        SafeDisconnectClient()
                         Console.WriteLine("Disconnected")
                         Thread.Sleep(10)
                         GoTo l1
@@ -168,7 +168,7 @@ l1:
                 'client.Disconnect(True)
 
             Catch e As Exception
-                client.Disconnect(True)
+                SafeDisconnectClient()
                 Console.WriteLine("Error")
                 GoTo l1
             End Try
@@ -178,7 +178,9 @@ l1:
 
             End If
         Catch ex As Exception
-            client.Disconnect(True)
+            SafeDisconnectClient()
+        Finally
+            keepAliveBusy = False
         End Try
         'End Using
         eUtil.LOGIT($"Total Messages Marked: {imessagecount}")
@@ -197,7 +199,6 @@ l1:
             End If
         Next
         'dgvEmails.Columns("Spam").Visible = False
-        keepAliveBusy = False
     End Sub
     Sub getJBulk()
         Dim sthisfolder As IMailFolder = Nothing
@@ -260,7 +261,7 @@ l1:
     'End Sub
 
     Private Sub btnMarkRead_Click(sender As Object, e As EventArgs) Handles btnMarkRead.Click
-        If client.IsConnected Then
+        If IsClientConnected() Then
             client.Inbox.Open(FolderAccess.ReadWrite)
         Else
             MessageBox.Show($"Email Client isnt connected, Quitting", "Warning", MessageBoxButtons.OK)
@@ -360,13 +361,11 @@ l1:
             End If
 
         End If
-        If eUtil.conn.State = ConnectionState.Open Then
+        If eUtil.conn IsNot Nothing AndAlso eUtil.conn.State = ConnectionState.Open Then
             eUtil.conn.Close()
         End If
         keepAliveTimer.Stop()
-        If client IsNot Nothing AndAlso client.IsConnected Then
-            client.Disconnect(True)
-        End If
+        SafeDisconnectClient()
     End Sub
 
     Private Sub cbSelectAll_CheckedChanged(sender As Object, e As EventArgs) Handles cbSelectAll.CheckedChanged
@@ -400,13 +399,13 @@ l1:
 
         ToolStrip.Visible = True
         If client IsNot Nothing Then
-            If client.IsConnected Then
-                client.Disconnect(True)
+            If IsClientConnected() Then
+                SafeDisconnectClient()
                 client = Nothing
             End If
         End If
         client = eUtil.Connect
-        If client.IsConnected Then
+        If IsClientConnected() Then
             UpdatetsStatusText($"Connected to {eUtil.sThisEmailService} for User {eUtil.sThisEmailUser}")
         Else
             UpdatetsStatusText($"Connected to {eUtil.sThisEmailService} for User {eUtil.sThisEmailUser}")
@@ -418,7 +417,7 @@ l1:
         UpdatetsStatusText(eUtil.Authenticate)
         UpdatetsStatusText(eUtil.OpenInbox)
         eUtil.SetupFolders()
-        If client.IsConnected Then
+        If IsClientConnected() Then
             tbMailClient.BackColor = Color.LightGreen
             btnConnect.Visible = False
             StartKeepAlive()
@@ -440,9 +439,9 @@ l1:
         keepAliveBusy = True
 
         Try
-            If client Is Nothing OrElse Not client.IsConnected Then
+            If Not IsClientConnected() Then
                 client = eUtil.Connect()
-                If client Is Nothing OrElse Not client.IsConnected Then
+                If Not IsClientConnected() Then
                     UpdatetsStatusText($"Keep alive reconnect failed at {Now:t}")
                     Exit Sub
                 End If
@@ -461,12 +460,37 @@ l1:
         End Try
     End Sub
 
+    Private Function IsClientConnected() As Boolean
+        Try
+            Return client IsNot Nothing AndAlso client.IsConnected
+        Catch ex As ObjectDisposedException
+            client = Nothing
+            Return False
+        End Try
+    End Function
+
+    Private Sub SafeDisconnectClient()
+        If client Is Nothing Then Exit Sub
+
+        Try
+            If IsClientConnected() Then
+                client.Disconnect(True)
+            End If
+        Catch ex As ObjectDisposedException
+            ' Already closed by MailKit or a reconnect attempt.
+        Catch ex As Exception
+            eUtil.LOGIT($"Disconnect failed: {ex.Message}")
+        Finally
+            client = Nothing
+        End Try
+    End Sub
+
     Private Sub cmbEmailClients_SelectedIndexChanged(sender As Object, e As EventArgs) Handles cmbEmailClients.SelectedIndexChanged
         Dim x = ""
         If tbMailClient.Text <> "" Then
             If cmbEmailClients.SelectedItem <> tbMailClient.Text Then
-                If client.IsConnected Then
-                    client.Disconnect(True)
+                If IsClientConnected() Then
+                    SafeDisconnectClient()
                     btnConnect.Visible = True
                 End If
             End If
