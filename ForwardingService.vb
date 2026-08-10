@@ -44,12 +44,13 @@ Public Class ForwardingService
             Return String.Equals(sender.Address, rule.MatchValue.Trim(), StringComparison.OrdinalIgnoreCase)
         End If
 
-        If String.Equals(rule.MatchType, "Sender name", StringComparison.OrdinalIgnoreCase) Then
-            If String.IsNullOrWhiteSpace(sender.Name) Then Return False
+        If String.Equals(rule.MatchType, "Name or email contains", StringComparison.OrdinalIgnoreCase) OrElse
+           String.Equals(rule.MatchType, "Sender name", StringComparison.OrdinalIgnoreCase) Then
+            Dim searchableSender = $"{sender.Name} {sender.Address}"
             Dim nameTokens = System.Text.RegularExpressions.Regex.Split(rule.MatchValue.Trim(), "\W+").
                 Where(Function(token) Not String.IsNullOrWhiteSpace(token)).ToList()
             Return nameTokens.Count > 0 AndAlso
-                   nameTokens.All(Function(token) sender.Name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                   nameTokens.All(Function(token) searchableSender.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
         End If
 
         If String.Equals(rule.MatchType, "Domain", StringComparison.OrdinalIgnoreCase) Then

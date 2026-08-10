@@ -46,6 +46,9 @@ Public Class ForwardingRepository
             Using command As New SqliteCommand(sql, connection)
                 command.ExecuteNonQuery()
             End Using
+            Using migration As New SqliteCommand("UPDATE ForwardingRules SET MatchType='Name or email contains' WHERE MatchType='Sender name'", connection)
+                migration.ExecuteNonQuery()
+            End Using
         End Using
     End Sub
 

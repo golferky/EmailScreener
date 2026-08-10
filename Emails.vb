@@ -331,7 +331,7 @@ l1:
             .Location = New Point(20, 112),
             .Size = New Size(130, 23)
         }
-        cmbForwardMatchType.Items.AddRange(New Object() {"Sender", "Sender name", "Domain"})
+        cmbForwardMatchType.Items.AddRange(New Object() {"Sender", "Name or email contains", "Domain"})
         cmbForwardMatchType.SelectedIndex = 0
         txtForwardMatchValue = New TextBox With {.Location = New Point(165, 112), .Size = New Size(290, 23)}
         txtForwardDestination = New TextBox With {.Location = New Point(470, 112), .Size = New Size(290, 23)}
@@ -550,7 +550,8 @@ l1:
 
     Private Shared Function BuildForwardingSearchQuery(rule As ForwardingRule, sinceDate As DateTime) As SearchQuery
         Dim query As SearchQuery = SearchQuery.DeliveredAfter(sinceDate.AddDays(-1))
-        If String.Equals(rule.MatchType, "Sender name", StringComparison.OrdinalIgnoreCase) Then
+        If String.Equals(rule.MatchType, "Name or email contains", StringComparison.OrdinalIgnoreCase) OrElse
+           String.Equals(rule.MatchType, "Sender name", StringComparison.OrdinalIgnoreCase) Then
             Dim nameTokens = System.Text.RegularExpressions.Regex.Split(rule.MatchValue.Trim(), "\W+").
                 Where(Function(token) Not String.IsNullOrWhiteSpace(token))
             For Each token In nameTokens
@@ -680,9 +681,9 @@ l1:
 
         If cmbForwardMatchType.Text = "Sender" AndAlso Not IsValidEmailAddress(matchValue) Then
             If matchValue.Contains(" "c) Then
-                cmbForwardMatchType.SelectedItem = "Sender name"
+                cmbForwardMatchType.SelectedItem = "Name or email contains"
             Else
-                MessageBox.Show("A Sender rule requires a complete email address. Choose Sender name to search by a person's name.",
+                MessageBox.Show("A Sender rule requires a complete email address. Choose Name or email contains to search by a person's name or partial address.",
                                 "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return False
             End If
@@ -716,7 +717,9 @@ l1:
     End Sub
 
     Private Sub UpdateWindowTitle()
-        Me.Text = $"EmailScreener v{Application.ProductVersion} — {My.Computer.Name} — {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}"
+        Dim version = My.Application.Info.Version
+        Dim displayVersion = $"{version.Major}.{version.Minor}.{version.Build}"
+        Me.Text = $"EmailScreener v{displayVersion} — {My.Computer.Name} — {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}"
     End Sub
 
     'Private Sub dgvEmails_CellDoubleClick(sender As Object, e As DataGridViewCellEventArgs) Handles dgvEmails.CellDoubleClick

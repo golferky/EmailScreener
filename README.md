@@ -24,7 +24,7 @@ Use provider-specific app passwords rather than primary account passwords. Revok
 
 Open the **Auto forwarding** tab to:
 
-1. Add an exact sender address, sender display name, or sender-domain rule.
+1. Add an exact sender address, a name-or-email-contains rule, or a sender-domain rule.
 2. Enter the destination Gmail address.
 3. Enable the rule and automatic forwarding.
 
