@@ -680,13 +680,7 @@ l1:
         End If
 
         If cmbForwardMatchType.Text = "Sender" AndAlso Not IsValidEmailAddress(matchValue) Then
-            If matchValue.Contains(" "c) Then
-                cmbForwardMatchType.SelectedItem = "Name or email contains"
-            Else
-                MessageBox.Show("A Sender rule requires a complete email address. Choose Name or email contains to search by a person's name or partial address.",
-                                "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-                Return False
-            End If
+            cmbForwardMatchType.SelectedItem = "Name or email contains"
         End If
         Return True
     End Function
@@ -717,9 +711,7 @@ l1:
     End Sub
 
     Private Sub UpdateWindowTitle()
-        Dim version = My.Application.Info.Version
-        Dim displayVersion = $"{version.Major}.{version.Minor}.{version.Build}"
-        Me.Text = $"EmailScreener v{displayVersion} — {My.Computer.Name} — {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}"
+        Me.Text = $"EmailScreener v{Application.ProductVersion} — {My.Computer.Name} — {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}"
     End Sub
 
     'Private Sub dgvEmails_CellDoubleClick(sender As Object, e As DataGridViewCellEventArgs) Handles dgvEmails.CellDoubleClick
