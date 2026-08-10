@@ -31,6 +31,10 @@ Public Class Emails
     Private WithEvents btnUseSelectedSender As Button
     Private WithEvents forwardSearchSince As DateTimePicker
     Private WithEvents btnScanForwarding As Button
+    Private WithEvents btnForwardPreviewed As Button
+    Private forwardingPreviewGrid As DataGridView
+    Private forwardingPreviewMessages As New Dictionary(Of Integer, MimeKit.MimeMessage)
+    Private forwardingPreviewRule As ForwardingRule
 
     Private Sub Emails_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         loadscreen()
@@ -295,7 +299,8 @@ l1:
             .Size = New Size(125, 23),
             .Value = Today.AddDays(-7)
         }
-        btnScanForwarding = New Button With {.Location = New Point(765, 54), .Size = New Size(145, 28), .Text = "Scan inbox now"}
+        btnScanForwarding = New Button With {.Location = New Point(765, 54), .Size = New Size(145, 28), .Text = "Preview matches"}
+        btnForwardPreviewed = New Button With {.Location = New Point(925, 54), .Size = New Size(145, 28), .Text = "Forward previewed", .Enabled = False}
         cmbForwardMatchType = New ComboBox With {
             .DropDownStyle = ComboBoxStyle.DropDownList,
             .Location = New Point(20, 112),
@@ -316,8 +321,8 @@ l1:
 
         forwardingGrid = New DataGridView With {
             .Location = New Point(20, 155),
-            .Size = New Size(1245, 500),
-            .Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right,
+            .Size = New Size(1245, 165),
+            .Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right,
             .AllowUserToAddRows = False,
             .AllowUserToDeleteRows = False,
             .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
@@ -328,11 +333,25 @@ l1:
         }
         AddHandler forwardingGrid.CellClick, AddressOf forwardingGrid_CellClick
 
+        Dim previewLabel As New Label With {.AutoSize = True, .Location = New Point(20, 338), .Text = "Preview — no messages are sent until you click Forward previewed"}
+        forwardingPreviewGrid = New DataGridView With {
+            .Location = New Point(20, 360),
+            .Size = New Size(1245, 295),
+            .Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right,
+            .AllowUserToAddRows = False,
+            .AllowUserToDeleteRows = False,
+            .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            .ReadOnly = True,
+            .RowHeadersVisible = False,
+            .SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            .MultiSelect = True
+        }
+
         forwardTab.Controls.AddRange(New Control() {
-            instructions, cbAutoForward, searchSinceLabel, forwardSearchSince, btnScanForwarding,
+            instructions, cbAutoForward, searchSinceLabel, forwardSearchSince, btnScanForwarding, btnForwardPreviewed,
             matchLabel, cmbForwardMatchType, valueLabel, txtForwardMatchValue,
             destinationLabel, txtForwardDestination, cbForwardRuleEnabled, btnSaveForwardRule,
-            btnDeleteForwardRule, btnUseSelectedSender, forwardingGrid
+            btnDeleteForwardRule, btnUseSelectedSender, forwardingGrid, previewLabel, forwardingPreviewGrid
         })
     End Sub
 
@@ -361,10 +380,15 @@ l1:
         If forwardingGrid.Columns.Contains("Id") Then forwardingGrid.Columns("Id").Visible = False
     End Sub
 
-    Private Function ProcessAutoForward(message As MimeKit.MimeMessage, uid As Integer, folder As String, Optional force As Boolean = False) As Integer
+    Private Function ProcessAutoForward(message As MimeKit.MimeMessage,
+                                        uid As Integer,
+                                        folder As String,
+                                        Optional force As Boolean = False,
+                                        Optional rulesOverride As IEnumerable(Of ForwardingRule) = Nothing) As Integer
         If forwardingRepository Is Nothing OrElse (Not force AndAlso Not cbAutoForward.Checked) Then Return 0
         Try
             Dim smtpHost = AppConfiguration.GetSmtpHost(eUtil.sThisEmailService)
+            Dim rulesToApply = If(rulesOverride, forwardingRules)
             Dim count = forwardingService.ForwardMatching(
                 message,
                 uid,
@@ -373,7 +397,7 @@ l1:
                 smtpHost,
                 eUtil.sThisEmailUser,
                 eUtil.sThisEmailPassword,
-                forwardingRules,
+                rulesToApply,
                 forwardingRepository)
             If count > 0 Then eUtil.LOGIT($"Auto-forwarded UID {uid} to {count} destination(s)")
             Return count
@@ -396,10 +420,13 @@ l1:
 
     Private Sub btnScanForwarding_Click(sender As Object, e As EventArgs) Handles btnScanForwarding.Click
         If forwardingRepository Is Nothing Then Exit Sub
-        If Not forwardingRules.Any(Function(rule) rule.Enabled) Then
-            MessageBox.Show("Add and enable at least one forwarding rule first.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Information)
-            Exit Sub
-        End If
+        If Not ValidateMatchCriteria() Then Exit Sub
+
+        forwardingPreviewRule = New ForwardingRule With {
+            .MatchType = cmbForwardMatchType.Text,
+            .MatchValue = txtForwardMatchValue.Text.Trim(),
+            .Enabled = True
+        }
 
         ApplySelectedEmailClientConfiguration()
         If Not IsClientConnected() Then client = eUtil.Connect()
@@ -420,47 +447,100 @@ l1:
             MessageBox.Show($"No inbox messages found since {sinceDate:d}.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Information)
             Exit Sub
         End If
-        If MessageBox.Show($"Scan {scanUids.Count} inbox messages received since {sinceDate:d}? Only rule matches will be forwarded.",
-                           "Scan inbox", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Exit Sub
 
         btnScanForwarding.Enabled = False
+        btnForwardPreviewed.Enabled = False
+        forwardingPreviewMessages.Clear()
+        Dim previewTable As New DataTable()
+        previewTable.Columns.Add("Sender name")
+        previewTable.Columns.Add("Email address")
+        previewTable.Columns.Add("Message count", GetType(Integer))
+        previewTable.Columns.Add("Oldest", GetType(DateTimeOffset))
+        previewTable.Columns.Add("Newest", GetType(DateTimeOffset))
+        Dim summaryRows As New Dictionary(Of String, DataRow)(StringComparer.OrdinalIgnoreCase)
         tsProgressBar.Value = 0
         tsProgressBar.Maximum = Math.Max(1, scanUids.Count)
         ToolStrip.Visible = True
-        Dim forwardedCount = 0
         Try
             For Each uid In scanUids
                 Dim message = client.Inbox.GetMessage(uid)
-                forwardedCount += ProcessAutoForward(message, CInt(uid.Id), client.Inbox.FullName, True)
+                If ForwardingService.RuleMatches(forwardingPreviewRule, message) Then
+                    forwardingPreviewMessages(CInt(uid.Id)) = message
+                    Dim mailbox = message.From.Mailboxes.FirstOrDefault()
+                    If mailbox IsNot Nothing Then
+                        Dim address = mailbox.Address
+                        If Not summaryRows.ContainsKey(address) Then
+                            Dim summaryRow = previewTable.NewRow()
+                            summaryRow("Sender name") = If(String.IsNullOrWhiteSpace(mailbox.Name), "(no display name)", mailbox.Name)
+                            summaryRow("Email address") = address
+                            summaryRow("Message count") = 1
+                            summaryRow("Oldest") = message.Date
+                            summaryRow("Newest") = message.Date
+                            previewTable.Rows.Add(summaryRow)
+                            summaryRows(address) = summaryRow
+                        Else
+                            Dim summaryRow = summaryRows(address)
+                            summaryRow("Message count") = CInt(summaryRow("Message count")) + 1
+                            If message.Date < DirectCast(summaryRow("Oldest"), DateTimeOffset) Then summaryRow("Oldest") = message.Date
+                            If message.Date > DirectCast(summaryRow("Newest"), DateTimeOffset) Then summaryRow("Newest") = message.Date
+                        End If
+                    End If
+                End If
                 tsProgressBar.Value += 1
-                UpdatetsStatusText($"Scanning {tsProgressBar.Value} of {scanUids.Count}: {message.From} — {message.Subject}")
+                UpdatetsStatusText($"Previewing {tsProgressBar.Value} of {scanUids.Count}: {message.From} — {message.Subject}")
             Next
-            MessageBox.Show($"Scan complete. {forwardedCount} message(s) forwarded.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            forwardingPreviewGrid.DataSource = previewTable
+            btnForwardPreviewed.Enabled = forwardingPreviewMessages.Count > 0
+            MessageBox.Show($"Preview complete. Found {forwardingPreviewMessages.Count} matching message(s) from {summaryRows.Count} email address(es). Nothing was sent.",
+                            "Preview matches", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Catch ex As Exception
-            eUtil.LOGIT($"Dated forwarding scan failed: {ex.Message}", True)
-            MessageBox.Show($"Scan failed: {ex.Message}", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            eUtil.LOGIT($"Forwarding preview failed: {ex.Message}", True)
+            MessageBox.Show($"Preview failed: {ex.Message}", "Preview matches", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
             btnScanForwarding.Enabled = True
         End Try
     End Sub
 
+    Private Sub btnForwardPreviewed_Click(sender As Object, e As EventArgs) Handles btnForwardPreviewed.Click
+        If forwardingRepository Is Nothing OrElse forwardingPreviewRule Is Nothing OrElse forwardingPreviewMessages.Count = 0 Then Exit Sub
+        Dim destination = txtForwardDestination.Text.Trim()
+        If Not ValidateGmailDestination(destination) Then Exit Sub
+        If MessageBox.Show($"Forward all {forwardingPreviewMessages.Count} previewed message(s) to {destination}?",
+                           "Forward previewed", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Exit Sub
+
+        Dim previewSendRule As New ForwardingRule With {
+            .MatchType = forwardingPreviewRule.MatchType,
+            .MatchValue = forwardingPreviewRule.MatchValue,
+            .Destination = destination,
+            .Enabled = True
+        }
+        Dim previewRules As New List(Of ForwardingRule) From {previewSendRule}
+        btnForwardPreviewed.Enabled = False
+        tsProgressBar.Value = 0
+        tsProgressBar.Maximum = Math.Max(1, forwardingPreviewMessages.Count)
+        Dim forwardedCount = 0
+        Try
+            For Each previewMessage In forwardingPreviewMessages
+                forwardedCount += ProcessAutoForward(previewMessage.Value, previewMessage.Key, client.Inbox.FullName, True, previewRules)
+                tsProgressBar.Value += 1
+                UpdatetsStatusText($"Forwarding preview {tsProgressBar.Value} of {forwardingPreviewMessages.Count}")
+            Next
+            MessageBox.Show($"Forwarding complete. {forwardedCount} message(s) sent; previously sent messages were skipped.",
+                            "Forward previewed", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            eUtil.LOGIT($"Forward preview failed: {ex.Message}", True)
+            MessageBox.Show($"Forwarding failed: {ex.Message}", "Forward previewed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            btnForwardPreviewed.Enabled = True
+        End Try
+    End Sub
+
     Private Sub btnSaveForwardRule_Click(sender As Object, e As EventArgs) Handles btnSaveForwardRule.Click
         If forwardingRepository Is Nothing Then Exit Sub
+        If Not ValidateMatchCriteria() Then Exit Sub
         Dim matchValue = txtForwardMatchValue.Text.Trim()
         Dim destination = txtForwardDestination.Text.Trim()
-        If String.IsNullOrWhiteSpace(matchValue) Then
-            MessageBox.Show("Enter a sender email address, sender name, or domain.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-            Exit Sub
-        End If
-        If Not IsValidEmailAddress(destination) Then
-            MessageBox.Show("Enter a valid destination Gmail address.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-            Exit Sub
-        End If
-        If Not destination.EndsWith("@gmail.com", StringComparison.OrdinalIgnoreCase) AndAlso
-           Not destination.EndsWith("@googlemail.com", StringComparison.OrdinalIgnoreCase) Then
-            MessageBox.Show("The forwarding destination must be a Gmail address.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-            Exit Sub
-        End If
+        If Not ValidateGmailDestination(destination) Then Exit Sub
 
         Dim rule As New ForwardingRule With {
             .Id = selectedForwardingRuleId,
@@ -469,9 +549,10 @@ l1:
             .Destination = destination,
             .Enabled = cbForwardRuleEnabled.Checked
         }
-        forwardingRepository.SaveRule(rule)
-        ClearForwardingEditor()
+        selectedForwardingRuleId = forwardingRepository.SaveRule(rule)
         RefreshForwardingRules()
+        btnSaveForwardRule.Text = "Update rule"
+        btnDeleteForwardRule.Enabled = True
     End Sub
 
     Private Sub btnDeleteForwardRule_Click(sender As Object, e As EventArgs) Handles btnDeleteForwardRule.Click
@@ -521,6 +602,38 @@ l1:
         Catch ex As FormatException
             Return False
         End Try
+    End Function
+
+    Private Function ValidateMatchCriteria() As Boolean
+        Dim matchValue = txtForwardMatchValue.Text.Trim()
+        If String.IsNullOrWhiteSpace(matchValue) Then
+            MessageBox.Show("Enter a sender email address, sender name, or domain.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return False
+        End If
+
+        If cmbForwardMatchType.Text = "Sender" AndAlso Not IsValidEmailAddress(matchValue) Then
+            If matchValue.Contains(" "c) Then
+                cmbForwardMatchType.SelectedItem = "Sender name"
+            Else
+                MessageBox.Show("A Sender rule requires a complete email address. Choose Sender name to search by a person's name.",
+                                "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Return False
+            End If
+        End If
+        Return True
+    End Function
+
+    Private Shared Function ValidateGmailDestination(destination As String) As Boolean
+        If Not IsValidEmailAddress(destination) Then
+            MessageBox.Show("Enter a valid destination Gmail address.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return False
+        End If
+        If Not destination.EndsWith("@gmail.com", StringComparison.OrdinalIgnoreCase) AndAlso
+           Not destination.EndsWith("@googlemail.com", StringComparison.OrdinalIgnoreCase) Then
+            MessageBox.Show("The forwarding destination must be a Gmail address.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return False
+        End If
+        Return True
     End Function
 
     Private Shared Function ExtractEmailAddress(value As String) As String

@@ -35,7 +35,7 @@ Public Class ForwardingService
         Return forwardedCount
     End Function
 
-    Private Shared Function RuleMatches(rule As ForwardingRule, message As MimeMessage) As Boolean
+    Public Shared Function RuleMatches(rule As ForwardingRule, message As MimeMessage) As Boolean
         If Not rule.Enabled OrElse message.From Is Nothing Then Return False
         Dim sender = message.From.Mailboxes.FirstOrDefault()
         If sender Is Nothing OrElse String.IsNullOrWhiteSpace(sender.Address) Then Return False
