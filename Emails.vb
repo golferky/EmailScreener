@@ -877,7 +877,17 @@ l1:
         End If
         ToolStrip.Visible = True
 
-        UpdatetsStatusText(eUtil.Authenticate)
+        Dim authenticationStatus = eUtil.Authenticate()
+        UpdatetsStatusText(authenticationStatus)
+        If Not client.IsAuthenticated Then
+            tbMailClient.BackColor = Color.Red
+            MessageBox.Show(authenticationStatus & vbCrLf & vbCrLf &
+                            "Verify the selected account's EMAILSCREENER user and app-password environment variables, then restart Visual Studio.",
+                            "Email authentication failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            SafeDisconnectClient()
+            btnConnect.Visible = True
+            Exit Sub
+        End If
         UpdatetsStatusText(eUtil.OpenInbox)
         eUtil.SetupFolders()
         If IsClientConnected() Then

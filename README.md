@@ -2,7 +2,7 @@
 
 EmailScreener is a VB.NET Windows Forms application that screens unread Gmail and Yahoo messages, stores message metadata in SQLite, and can automatically forward messages from configured senders or domains to Gmail.
 
-The running version is displayed in the form title bar using the `yyyyMMdd.N` build format. Version 20260810.1 adds secure configuration, forwarding rules, sender/date previews, cancellation, and confirmed forwarding.
+The running version is displayed in the form title bar using the `yyyyMMdd.N` build format. Version 20260810.2 adds secure configuration, forwarding rules, sender/date previews, cancellation, confirmed forwarding, and safer authentication-error handling.
 
 ## Secure configuration
 

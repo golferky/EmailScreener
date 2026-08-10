@@ -193,15 +193,24 @@ DateAdded,D,,N,
         'tsStatusText.Text = $"Authenticating User {sThisEmailUser}"
         'Application.DoEvents()
         Try
+            If client Is Nothing OrElse Not client.IsConnected Then
+                Return "Authentication failed: the email server is not connected."
+            End If
             client.Authenticate(sThisEmailUser, sThisEmailPassword)
             Return $"Authenticated User {sThisEmailUser}"
         Catch ex As Exception
-            Return $"Authenticating User {sThisEmailUser} Failed"
+            Return $"Authentication failed for {sThisEmailUser}: {ex.Message}"
         End Try
 
     End Function
     Function OpenInbox(Optional readwrite As Boolean = False) As String
         Try
+            If client Is Nothing OrElse Not client.IsConnected Then
+                Return "Inbox open failed: the email server is not connected."
+            End If
+            If Not client.IsAuthenticated Then
+                Return "Inbox open failed: the email account is not authenticated."
+            End If
             If readwrite Then
                 client.Inbox.Open(FolderAccess.ReadWrite)
             Else
@@ -210,7 +219,7 @@ DateAdded,D,,N,
 
             Return $"Inbox Opened for {client.Inbox.Access}"
         Catch ex As Exception
-            Return $"Inbox Opened failed for {client.Inbox.Access}"
+            Return $"Inbox open failed: {ex.Message}"
         End Try
         'tsStatusText.Text = $"Opening {client.Inbox.FullName}"
         'Application.DoEvents()
