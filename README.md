@@ -26,6 +26,8 @@ Open the **Auto forwarding** tab to:
 2. Enter the destination Gmail address.
 3. Enable the rule and automatic forwarding.
 
+The destination defaults to `EMAILSCREENER_GMAIL_USER` and EmailScreener remembers the last valid Gmail destination used.
+
 Forwarding runs while unread mail is screened. The complete original message is attached to the forwarded message, preserving its content and attachments. Successful sends are recorded by account, folder, IMAP UID, and destination so a message is not forwarded twice.
 
 To search older mail safely, choose a **Search since** date and click **Preview matches**. Previewing sends nothing; Yahoo/Gmail first filters candidates by sender and date on the server, then EmailScreener verifies the sender locally. The preview groups matches by sender display name and email address and shows the message count plus oldest/newest dates. After reviewing the summary, enter the Gmail destination and click **Forward previewed**, which requires a final confirmation. The dated preview checks both read and unread inbox messages and uses the same duplicate protection when forwarding. Original plain-text content is included inline so downstream Gmail and calendar workflows can read it, while the complete original remains attached. Use the Cancel button on either tab to stop the active screening, preview, or forwarding pass after its current message finishes.

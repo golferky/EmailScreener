@@ -388,6 +388,8 @@ l1:
             Dim savedDate = forwardingRepository.GetSetting("ForwardSearchSinceDate")
             Dim parsedDate As DateTime
             If DateTime.TryParse(savedDate, parsedDate) Then forwardSearchSince.Value = parsedDate
+            Dim savedDestination = forwardingRepository.GetSetting("ForwardDestination", AppConfiguration.GetEnvironment("EMAILSCREENER_GMAIL_USER"))
+            If IsValidEmailAddress(savedDestination) Then txtForwardDestination.Text = savedDestination
             RefreshForwardingRules()
         Catch ex As Exception
             cbAutoForward.Enabled = False
@@ -563,6 +565,7 @@ l1:
         If forwardingRepository Is Nothing OrElse forwardingPreviewRule Is Nothing OrElse forwardingPreviewMessages.Count = 0 Then Exit Sub
         Dim destination = txtForwardDestination.Text.Trim()
         If Not ValidateGmailDestination(destination) Then Exit Sub
+        forwardingRepository.SetSetting("ForwardDestination", destination)
         If MessageBox.Show($"Forward all {forwardingPreviewMessages.Count} previewed message(s) to {destination}?",
                            "Forward previewed", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Exit Sub
 
@@ -605,6 +608,7 @@ l1:
         Dim matchValue = txtForwardMatchValue.Text.Trim()
         Dim destination = txtForwardDestination.Text.Trim()
         If Not ValidateGmailDestination(destination) Then Exit Sub
+        forwardingRepository.SetSetting("ForwardDestination", destination)
 
         Dim rule As New ForwardingRule With {
             .Id = selectedForwardingRuleId,
