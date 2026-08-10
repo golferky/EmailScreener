@@ -138,21 +138,32 @@ Public Class ForwardingRepository
     End Sub
 
     Public Function GetAutoForwardEnabled() As Boolean
+        Return String.Equals(GetSetting("AutoForwardEnabled"), "true", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Public Sub SetAutoForwardEnabled(enabled As Boolean)
+        SetSetting("AutoForwardEnabled", If(enabled, "true", "false"))
+    End Sub
+
+    Public Function GetSetting(key As String, Optional defaultValue As String = "") As String
         Using connection As New SqliteConnection(connectionString)
             connection.Open()
-            Using command As New SqliteCommand("SELECT SettingValue FROM AppSettings WHERE SettingKey='AutoForwardEnabled'", connection)
+            Using command As New SqliteCommand("SELECT SettingValue FROM AppSettings WHERE SettingKey=@key", connection)
+                command.Parameters.AddWithValue("@key", key)
                 Dim value = TryCast(command.ExecuteScalar(), String)
-                Return String.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+                If value Is Nothing Then Return defaultValue
+                Return value
             End Using
         End Using
     End Function
 
-    Public Sub SetAutoForwardEnabled(enabled As Boolean)
+    Public Sub SetSetting(key As String, value As String)
         Using connection As New SqliteConnection(connectionString)
             connection.Open()
-            Dim sql = "INSERT INTO AppSettings (SettingKey, SettingValue) VALUES ('AutoForwardEnabled', @value) ON CONFLICT(SettingKey) DO UPDATE SET SettingValue=excluded.SettingValue"
+            Dim sql = "INSERT INTO AppSettings (SettingKey, SettingValue) VALUES (@key, @value) ON CONFLICT(SettingKey) DO UPDATE SET SettingValue=excluded.SettingValue"
             Using command As New SqliteCommand(sql, connection)
-                command.Parameters.AddWithValue("@value", If(enabled, "true", "false"))
+                command.Parameters.AddWithValue("@key", key)
+                command.Parameters.AddWithValue("@value", value)
                 command.ExecuteNonQuery()
             End Using
         End Using

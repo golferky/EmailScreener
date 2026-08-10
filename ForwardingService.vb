@@ -44,6 +44,14 @@ Public Class ForwardingService
             Return String.Equals(sender.Address, rule.MatchValue.Trim(), StringComparison.OrdinalIgnoreCase)
         End If
 
+        If String.Equals(rule.MatchType, "Sender name", StringComparison.OrdinalIgnoreCase) Then
+            If String.IsNullOrWhiteSpace(sender.Name) Then Return False
+            Dim nameTokens = System.Text.RegularExpressions.Regex.Split(rule.MatchValue.Trim(), "\W+").
+                Where(Function(token) Not String.IsNullOrWhiteSpace(token)).ToList()
+            Return nameTokens.Count > 0 AndAlso
+                   nameTokens.All(Function(token) sender.Name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+        End If
+
         If String.Equals(rule.MatchType, "Domain", StringComparison.OrdinalIgnoreCase) Then
             Dim separator = sender.Address.LastIndexOf("@"c)
             If separator < 0 Then Return False
@@ -62,11 +70,15 @@ Public Class ForwardingService
         Dim originalSender = original.From.Mailboxes.FirstOrDefault()
         If originalSender IsNot Nothing Then forwarded.ReplyTo.Add(originalSender)
 
+        Dim originalText = If(original.TextBody, "(The original message has no plain-text body.)")
         Dim intro As New TextPart("plain") With {
             .Text = $"Forwarded automatically by EmailScreener.{Environment.NewLine}" &
                     $"Original sender: {original.From}{Environment.NewLine}" &
-                    $"Original date: {original.Date}{Environment.NewLine}{Environment.NewLine}" &
-                    "The complete original message is attached."
+                    $"Original date: {original.Date}{Environment.NewLine}" &
+                    $"Original subject: {original.Subject}{Environment.NewLine}" &
+                    $"{New String("-"c, 72)}{Environment.NewLine}" &
+                    originalText & Environment.NewLine & Environment.NewLine &
+                    "The complete original message is also attached."
         }
         Dim originalPart As New MessagePart With {.Message = original}
         Dim body As New Multipart("mixed") From {intro, originalPart}

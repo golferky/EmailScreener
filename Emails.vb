@@ -29,6 +29,8 @@ Public Class Emails
     Private WithEvents btnSaveForwardRule As Button
     Private WithEvents btnDeleteForwardRule As Button
     Private WithEvents btnUseSelectedSender As Button
+    Private WithEvents forwardSearchSince As DateTimePicker
+    Private WithEvents btnScanForwarding As Button
 
     Private Sub Emails_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         loadscreen()
@@ -40,15 +42,7 @@ Public Class Emails
             cmbEmailClients.Items.Add(sclient.Split(",")(0))
         Next
         cmbEmailClients.SelectedIndex = 0
-
-        For Each eclient As String In eUtil.lEmailClients
-            If eclient.Split(",")(0) = cmbEmailClients.SelectedItem Then
-                eUtil.sThisEmailService = eclient.Split(",")(1)
-                eUtil.sThisEmailUser = eclient.Split(",")(2)
-                eUtil.sThisEmailPassword = eclient.Split(",")(3)
-                Exit For
-            End If
-        Next
+        ApplySelectedEmailClientConfiguration()
         If System.IO.File.Exists(eUtil.sqlitePath) Then
             eUtil.openconn()
             eUtil.getdbInfo()
@@ -287,19 +281,27 @@ l1:
             .AutoSize = False,
             .Location = New Point(20, 15),
             .Size = New Size(1200, 38),
-            .Text = "Forward matching unread messages to Gmail. Each original message is attached intact, and each account/folder/UID/destination is sent only once."
+            .Text = "Automatically forward matching unread mail, or scan matching inbox mail since a chosen date. Duplicate sends are prevented."
         }
         cbAutoForward = New CheckBox With {
             .AutoSize = True,
             .Location = New Point(20, 58),
             .Text = "Enable automatic forwarding while screening unread mail"
         }
+        Dim searchSinceLabel As New Label With {.AutoSize = True, .Location = New Point(540, 60), .Text = "Search since"}
+        forwardSearchSince = New DateTimePicker With {
+            .Format = DateTimePickerFormat.Short,
+            .Location = New Point(625, 56),
+            .Size = New Size(125, 23),
+            .Value = Today.AddDays(-7)
+        }
+        btnScanForwarding = New Button With {.Location = New Point(765, 54), .Size = New Size(145, 28), .Text = "Scan inbox now"}
         cmbForwardMatchType = New ComboBox With {
             .DropDownStyle = ComboBoxStyle.DropDownList,
             .Location = New Point(20, 112),
             .Size = New Size(130, 23)
         }
-        cmbForwardMatchType.Items.AddRange(New Object() {"Sender", "Domain"})
+        cmbForwardMatchType.Items.AddRange(New Object() {"Sender", "Sender name", "Domain"})
         cmbForwardMatchType.SelectedIndex = 0
         txtForwardMatchValue = New TextBox With {.Location = New Point(165, 112), .Size = New Size(290, 23)}
         txtForwardDestination = New TextBox With {.Location = New Point(470, 112), .Size = New Size(290, 23)}
@@ -309,7 +311,7 @@ l1:
         btnUseSelectedSender = New Button With {.Location = New Point(1115, 109), .Size = New Size(150, 28), .Text = "Use selected sender"}
 
         Dim matchLabel As New Label With {.AutoSize = True, .Location = New Point(20, 91), .Text = "Match type"}
-        Dim valueLabel As New Label With {.AutoSize = True, .Location = New Point(165, 91), .Text = "Sender email or domain"}
+        Dim valueLabel As New Label With {.AutoSize = True, .Location = New Point(165, 91), .Text = "Sender email, name, or domain"}
         Dim destinationLabel As New Label With {.AutoSize = True, .Location = New Point(470, 91), .Text = "Destination Gmail address"}
 
         forwardingGrid = New DataGridView With {
@@ -327,7 +329,8 @@ l1:
         AddHandler forwardingGrid.CellClick, AddressOf forwardingGrid_CellClick
 
         forwardTab.Controls.AddRange(New Control() {
-            instructions, cbAutoForward, matchLabel, cmbForwardMatchType, valueLabel, txtForwardMatchValue,
+            instructions, cbAutoForward, searchSinceLabel, forwardSearchSince, btnScanForwarding,
+            matchLabel, cmbForwardMatchType, valueLabel, txtForwardMatchValue,
             destinationLabel, txtForwardDestination, cbForwardRuleEnabled, btnSaveForwardRule,
             btnDeleteForwardRule, btnUseSelectedSender, forwardingGrid
         })
@@ -338,6 +341,9 @@ l1:
             forwardingRepository = New ForwardingRepository(eUtil.sqlitePath)
             forwardingUiLoading = True
             cbAutoForward.Checked = forwardingRepository.GetAutoForwardEnabled()
+            Dim savedDate = forwardingRepository.GetSetting("ForwardSearchSinceDate")
+            Dim parsedDate As DateTime
+            If DateTime.TryParse(savedDate, parsedDate) Then forwardSearchSince.Value = parsedDate
             RefreshForwardingRules()
         Catch ex As Exception
             cbAutoForward.Enabled = False
@@ -355,8 +361,8 @@ l1:
         If forwardingGrid.Columns.Contains("Id") Then forwardingGrid.Columns("Id").Visible = False
     End Sub
 
-    Private Sub ProcessAutoForward(message As MimeKit.MimeMessage, uid As Integer, folder As String)
-        If forwardingRepository Is Nothing OrElse Not cbAutoForward.Checked Then Exit Sub
+    Private Function ProcessAutoForward(message As MimeKit.MimeMessage, uid As Integer, folder As String, Optional force As Boolean = False) As Integer
+        If forwardingRepository Is Nothing OrElse (Not force AndAlso Not cbAutoForward.Checked) Then Return 0
         Try
             Dim smtpHost = AppConfiguration.GetSmtpHost(eUtil.sThisEmailService)
             Dim count = forwardingService.ForwardMatching(
@@ -370,15 +376,72 @@ l1:
                 forwardingRules,
                 forwardingRepository)
             If count > 0 Then eUtil.LOGIT($"Auto-forwarded UID {uid} to {count} destination(s)")
+            Return count
         Catch ex As Exception
             eUtil.LOGIT($"Auto-forward failed for UID {uid}: {ex.Message}", True)
             UpdatetsStatusText($"Auto-forward failed for UID {uid}: {ex.Message}")
+            Return 0
         End Try
-    End Sub
+    End Function
 
     Private Sub cbAutoForward_CheckedChanged(sender As Object, e As EventArgs) Handles cbAutoForward.CheckedChanged
         If forwardingUiLoading OrElse forwardingRepository Is Nothing Then Exit Sub
         forwardingRepository.SetAutoForwardEnabled(cbAutoForward.Checked)
+    End Sub
+
+    Private Sub forwardSearchSince_ValueChanged(sender As Object, e As EventArgs) Handles forwardSearchSince.ValueChanged
+        If forwardingUiLoading OrElse forwardingRepository Is Nothing Then Exit Sub
+        forwardingRepository.SetSetting("ForwardSearchSinceDate", forwardSearchSince.Value.Date.ToString("yyyy-MM-dd"))
+    End Sub
+
+    Private Sub btnScanForwarding_Click(sender As Object, e As EventArgs) Handles btnScanForwarding.Click
+        If forwardingRepository Is Nothing Then Exit Sub
+        If Not forwardingRules.Any(Function(rule) rule.Enabled) Then
+            MessageBox.Show("Add and enable at least one forwarding rule first.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Exit Sub
+        End If
+
+        ApplySelectedEmailClientConfiguration()
+        If Not IsClientConnected() Then client = eUtil.Connect()
+        If Not IsClientConnected() Then Exit Sub
+        If Not client.IsAuthenticated Then eUtil.Authenticate()
+        If Not client.IsAuthenticated Then
+            MessageBox.Show("Email authentication failed.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Exit Sub
+        End If
+        tbMailClient.Text = cmbEmailClients.SelectedItem.ToString()
+        tbMailClient.BackColor = Color.LightGreen
+        If Not client.Inbox.IsOpen Then client.Inbox.Open(FolderAccess.ReadOnly)
+
+        Dim sinceDate = forwardSearchSince.Value.Date
+        forwardingRepository.SetSetting("ForwardSearchSinceDate", sinceDate.ToString("yyyy-MM-dd"))
+        Dim scanUids = client.Inbox.Search(SearchQuery.DeliveredAfter(sinceDate.AddDays(-1))).Reverse().ToList()
+        If scanUids.Count = 0 Then
+            MessageBox.Show($"No inbox messages found since {sinceDate:d}.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Exit Sub
+        End If
+        If MessageBox.Show($"Scan {scanUids.Count} inbox messages received since {sinceDate:d}? Only rule matches will be forwarded.",
+                           "Scan inbox", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Exit Sub
+
+        btnScanForwarding.Enabled = False
+        tsProgressBar.Value = 0
+        tsProgressBar.Maximum = Math.Max(1, scanUids.Count)
+        ToolStrip.Visible = True
+        Dim forwardedCount = 0
+        Try
+            For Each uid In scanUids
+                Dim message = client.Inbox.GetMessage(uid)
+                forwardedCount += ProcessAutoForward(message, CInt(uid.Id), client.Inbox.FullName, True)
+                tsProgressBar.Value += 1
+                UpdatetsStatusText($"Scanning {tsProgressBar.Value} of {scanUids.Count}: {message.From} — {message.Subject}")
+            Next
+            MessageBox.Show($"Scan complete. {forwardedCount} message(s) forwarded.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            eUtil.LOGIT($"Dated forwarding scan failed: {ex.Message}", True)
+            MessageBox.Show($"Scan failed: {ex.Message}", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            btnScanForwarding.Enabled = True
+        End Try
     End Sub
 
     Private Sub btnSaveForwardRule_Click(sender As Object, e As EventArgs) Handles btnSaveForwardRule.Click
@@ -386,7 +449,7 @@ l1:
         Dim matchValue = txtForwardMatchValue.Text.Trim()
         Dim destination = txtForwardDestination.Text.Trim()
         If String.IsNullOrWhiteSpace(matchValue) Then
-            MessageBox.Show("Enter a sender email address or domain.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            MessageBox.Show("Enter a sender email address, sender name, or domain.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Exit Sub
         End If
         If Not IsValidEmailAddress(destination) Then
@@ -640,6 +703,7 @@ l1:
         eUtil.SetupFolders()
         If IsClientConnected() Then
             tbMailClient.BackColor = Color.LightGreen
+            tbMailClient.Text = cmbEmailClients.SelectedItem.ToString()
             btnConnect.Visible = False
             StartKeepAlive()
             btnRefreshGrid_Click(sender, e)
@@ -707,7 +771,6 @@ l1:
     End Sub
 
     Private Sub cmbEmailClients_SelectedIndexChanged(sender As Object, e As EventArgs) Handles cmbEmailClients.SelectedIndexChanged
-        Dim x = ""
         If tbMailClient.Text <> "" Then
             If cmbEmailClients.SelectedItem <> tbMailClient.Text Then
                 If IsClientConnected() Then
@@ -716,7 +779,20 @@ l1:
                 End If
             End If
         End If
+        ApplySelectedEmailClientConfiguration()
+    End Sub
 
+    Private Sub ApplySelectedEmailClientConfiguration()
+        If cmbEmailClients.SelectedItem Is Nothing Then Exit Sub
+        For Each emailClient As String In eUtil.lEmailClients
+            Dim parts = emailClient.Split(","c)
+            If parts.Length >= 4 AndAlso parts(0) = cmbEmailClients.SelectedItem.ToString() Then
+                eUtil.sThisEmailService = parts(1)
+                eUtil.sThisEmailUser = parts(2)
+                eUtil.sThisEmailPassword = parts(3)
+                Exit For
+            End If
+        Next
     End Sub
 
     Private Sub dgvEmails_CellEnter(sender As Object, e As DataGridViewCellEventArgs) Handles dgvEmails.CellEnter
