@@ -334,7 +334,7 @@ l1:
         cmbForwardMatchType.Items.AddRange(New Object() {"Sender", "Sender name", "Domain"})
         cmbForwardMatchType.SelectedIndex = 0
         txtForwardMatchValue = New TextBox With {.Location = New Point(165, 112), .Size = New Size(290, 23)}
-        txtForwardDestination = New TextBox With {.Location = New Point(470, 112), .Size = New Size(290, 23)}
+        txtForwardDestination = New TextBox With {.Location = New Point(470, 112), .Size = New Size(290, 23), .ReadOnly = True}
         cbForwardRuleEnabled = New CheckBox With {.AutoSize = True, .Location = New Point(775, 114), .Text = "Rule enabled", .Checked = True}
         btnSaveForwardRule = New Button With {.Location = New Point(885, 109), .Size = New Size(105, 28), .Text = "Add rule"}
         btnDeleteForwardRule = New Button With {.Location = New Point(1000, 109), .Size = New Size(105, 28), .Text = "Delete rule", .Enabled = False}
@@ -342,7 +342,7 @@ l1:
 
         Dim matchLabel As New Label With {.AutoSize = True, .Location = New Point(20, 91), .Text = "Match type"}
         Dim valueLabel As New Label With {.AutoSize = True, .Location = New Point(165, 91), .Text = "Sender email, name, or domain"}
-        Dim destinationLabel As New Label With {.AutoSize = True, .Location = New Point(470, 91), .Text = "Destination Gmail address"}
+        Dim destinationLabel As New Label With {.AutoSize = True, .Location = New Point(470, 91), .Text = "Destination Gmail address (environment)"}
 
         forwardingGrid = New DataGridView With {
             .Location = New Point(20, 155),
@@ -388,8 +388,8 @@ l1:
             Dim savedDate = forwardingRepository.GetSetting("ForwardSearchSinceDate")
             Dim parsedDate As DateTime
             If DateTime.TryParse(savedDate, parsedDate) Then forwardSearchSince.Value = parsedDate
-            Dim savedDestination = forwardingRepository.GetSetting("ForwardDestination", AppConfiguration.GetEnvironment("EMAILSCREENER_GMAIL_USER"))
-            If IsValidEmailAddress(savedDestination) Then txtForwardDestination.Text = savedDestination
+            Dim configuredDestination = AppConfiguration.GetEnvironment("EMAILSCREENER_GMAIL_USER")
+            If IsValidEmailAddress(configuredDestination) Then txtForwardDestination.Text = configuredDestination
             RefreshForwardingRules()
         Catch ex As Exception
             cbAutoForward.Enabled = False
@@ -565,7 +565,6 @@ l1:
         If forwardingRepository Is Nothing OrElse forwardingPreviewRule Is Nothing OrElse forwardingPreviewMessages.Count = 0 Then Exit Sub
         Dim destination = txtForwardDestination.Text.Trim()
         If Not ValidateGmailDestination(destination) Then Exit Sub
-        forwardingRepository.SetSetting("ForwardDestination", destination)
         If MessageBox.Show($"Forward all {forwardingPreviewMessages.Count} previewed message(s) to {destination}?",
                            "Forward previewed", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Exit Sub
 
@@ -608,7 +607,6 @@ l1:
         Dim matchValue = txtForwardMatchValue.Text.Trim()
         Dim destination = txtForwardDestination.Text.Trim()
         If Not ValidateGmailDestination(destination) Then Exit Sub
-        forwardingRepository.SetSetting("ForwardDestination", destination)
 
         Dim rule As New ForwardingRule With {
             .Id = selectedForwardingRuleId,

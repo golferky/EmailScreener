@@ -26,7 +26,7 @@ Open the **Auto forwarding** tab to:
 2. Enter the destination Gmail address.
 3. Enable the rule and automatic forwarding.
 
-The destination defaults to `EMAILSCREENER_GMAIL_USER` and EmailScreener remembers the last valid Gmail destination used.
+The destination is read directly from `EMAILSCREENER_GMAIL_USER` and is read-only in the forwarding screen. Change the Windows user environment variable and restart EmailScreener to use a different destination.
 
 Forwarding runs while unread mail is screened. The complete original message is attached to the forwarded message, preserving its content and attachments. Successful sends are recorded by account, folder, IMAP UID, and destination so a message is not forwarded twice.
 
