@@ -334,7 +334,7 @@ l1:
         cmbForwardMatchType.Items.AddRange(New Object() {"Sender", "Sender name", "Domain"})
         cmbForwardMatchType.SelectedIndex = 0
         txtForwardMatchValue = New TextBox With {.Location = New Point(165, 112), .Size = New Size(290, 23)}
-        txtForwardDestination = New TextBox With {.Location = New Point(470, 112), .Size = New Size(290, 23), .ReadOnly = True}
+        txtForwardDestination = New TextBox With {.Location = New Point(470, 112), .Size = New Size(290, 23)}
         cbForwardRuleEnabled = New CheckBox With {.AutoSize = True, .Location = New Point(775, 114), .Text = "Rule enabled", .Checked = True}
         btnSaveForwardRule = New Button With {.Location = New Point(885, 109), .Size = New Size(105, 28), .Text = "Add rule"}
         btnDeleteForwardRule = New Button With {.Location = New Point(1000, 109), .Size = New Size(105, 28), .Text = "Delete rule", .Enabled = False}
@@ -342,7 +342,7 @@ l1:
 
         Dim matchLabel As New Label With {.AutoSize = True, .Location = New Point(20, 91), .Text = "Match type"}
         Dim valueLabel As New Label With {.AutoSize = True, .Location = New Point(165, 91), .Text = "Sender email, name, or domain"}
-        Dim destinationLabel As New Label With {.AutoSize = True, .Location = New Point(470, 91), .Text = "Destination Gmail address (environment)"}
+        Dim destinationLabel As New Label With {.AutoSize = True, .Location = New Point(470, 91), .Text = "Destination Gmail address"}
 
         forwardingGrid = New DataGridView With {
             .Location = New Point(20, 155),
