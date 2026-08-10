@@ -442,9 +442,10 @@ l1:
 
         Dim sinceDate = forwardSearchSince.Value.Date
         forwardingRepository.SetSetting("ForwardSearchSinceDate", sinceDate.ToString("yyyy-MM-dd"))
-        Dim scanUids = client.Inbox.Search(SearchQuery.DeliveredAfter(sinceDate.AddDays(-1))).Reverse().ToList()
+        Dim serverQuery = BuildForwardingSearchQuery(forwardingPreviewRule, sinceDate)
+        Dim scanUids = client.Inbox.Search(serverQuery).Reverse().ToList()
         If scanUids.Count = 0 Then
-            MessageBox.Show($"No inbox messages found since {sinceDate:d}.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            MessageBox.Show($"No likely matches found in the inbox since {sinceDate:d}.", "Preview matches", MessageBoxButtons.OK, MessageBoxIcon.Information)
             Exit Sub
         End If
 
@@ -500,6 +501,20 @@ l1:
             btnScanForwarding.Enabled = True
         End Try
     End Sub
+
+    Private Shared Function BuildForwardingSearchQuery(rule As ForwardingRule, sinceDate As DateTime) As SearchQuery
+        Dim query As SearchQuery = SearchQuery.DeliveredAfter(sinceDate.AddDays(-1))
+        If String.Equals(rule.MatchType, "Sender name", StringComparison.OrdinalIgnoreCase) Then
+            Dim nameTokens = System.Text.RegularExpressions.Regex.Split(rule.MatchValue.Trim(), "\W+").
+                Where(Function(token) Not String.IsNullOrWhiteSpace(token))
+            For Each token In nameTokens
+                query = query.And(SearchQuery.FromContains(token))
+            Next
+        Else
+            query = query.And(SearchQuery.FromContains(rule.MatchValue.Trim().TrimStart("@"c)))
+        End If
+        Return query
+    End Function
 
     Private Sub btnForwardPreviewed_Click(sender As Object, e As EventArgs) Handles btnForwardPreviewed.Click
         If forwardingRepository Is Nothing OrElse forwardingPreviewRule Is Nothing OrElse forwardingPreviewMessages.Count = 0 Then Exit Sub
