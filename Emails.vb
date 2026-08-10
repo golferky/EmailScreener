@@ -35,6 +35,10 @@ Public Class Emails
     Private forwardingPreviewGrid As DataGridView
     Private forwardingPreviewMessages As New Dictionary(Of Integer, MimeKit.MimeMessage)
     Private forwardingPreviewRule As ForwardingRule
+    Private cancelEmailOperation As Boolean
+    Private cancelForwardingOperation As Boolean
+    Private WithEvents btnCancelEmailOperation As Button
+    Private WithEvents btnCancelForwardingOperation As Button
 
     Private Sub Emails_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         loadscreen()
@@ -98,6 +102,8 @@ Public Class Emails
         End If
     End Sub
     Sub GetUnread()
+        cancelEmailOperation = False
+        btnCancelEmailOperation.Enabled = True
         keepAliveBusy = True
         ToolStrip.Visible = True
         Dim imessagecount = 0
@@ -110,6 +116,7 @@ Public Class Emails
 
             Dim j As Integer = 1
 l1:
+            If cancelEmailOperation Then Return
             If Not IsClientConnected() Then
                 client = eUtil.Connect()
                 Application.DoEvents()
@@ -143,6 +150,11 @@ l1:
                     Exit Sub
                 End If
                 For i As Integer = 0 To uids.Count - 1
+                    Application.DoEvents()
+                    If cancelEmailOperation Then
+                        tsStatusText.Text = $"Email screening cancelled after {i} of {uids.Count} messages"
+                        Exit For
+                    End If
                     If i = 0 Then btnSave.Visible = True
                     'resize each col in grid
                     'If i = 0 Then
@@ -184,9 +196,13 @@ l1:
                 'client.Disconnect(True)
 
             Catch e As Exception
-                SafeDisconnectClient()
-                Console.WriteLine("Error")
-                GoTo l1
+                If cancelEmailOperation Then
+                    tsStatusText.Text = "Email screening cancelled"
+                Else
+                    SafeDisconnectClient()
+                    Console.WriteLine("Error")
+                    GoTo l1
+                End If
             End Try
 
             j += 1
@@ -197,6 +213,7 @@ l1:
             SafeDisconnectClient()
         Finally
             keepAliveBusy = False
+            btnCancelEmailOperation.Enabled = False
         End Try
         'End Using
         eUtil.LOGIT($"Total Messages Marked: {imessagecount}")
@@ -273,6 +290,13 @@ l1:
         For Each control In controlsToMove
             emailTab.Controls.Add(control)
         Next
+        btnCancelEmailOperation = New Button With {
+            .Location = New Point(755, 42),
+            .Size = New Size(118, 23),
+            .Text = "Cancel screening",
+            .Enabled = False
+        }
+        emailTab.Controls.Add(btnCancelEmailOperation)
 
         forwardingTabs = New TabControl With {.Dock = DockStyle.Fill}
         forwardingTabs.TabPages.Add(emailTab)
@@ -301,6 +325,7 @@ l1:
         }
         btnScanForwarding = New Button With {.Location = New Point(765, 54), .Size = New Size(145, 28), .Text = "Preview matches"}
         btnForwardPreviewed = New Button With {.Location = New Point(925, 54), .Size = New Size(145, 28), .Text = "Forward previewed", .Enabled = False}
+        btnCancelForwardingOperation = New Button With {.Location = New Point(1085, 54), .Size = New Size(145, 28), .Text = "Cancel operation", .Enabled = False}
         cmbForwardMatchType = New ComboBox With {
             .DropDownStyle = ComboBoxStyle.DropDownList,
             .Location = New Point(20, 112),
@@ -348,7 +373,7 @@ l1:
         }
 
         forwardTab.Controls.AddRange(New Control() {
-            instructions, cbAutoForward, searchSinceLabel, forwardSearchSince, btnScanForwarding, btnForwardPreviewed,
+            instructions, cbAutoForward, searchSinceLabel, forwardSearchSince, btnScanForwarding, btnForwardPreviewed, btnCancelForwardingOperation,
             matchLabel, cmbForwardMatchType, valueLabel, txtForwardMatchValue,
             destinationLabel, txtForwardDestination, cbForwardRuleEnabled, btnSaveForwardRule,
             btnDeleteForwardRule, btnUseSelectedSender, forwardingGrid, previewLabel, forwardingPreviewGrid
@@ -413,6 +438,18 @@ l1:
         forwardingRepository.SetAutoForwardEnabled(cbAutoForward.Checked)
     End Sub
 
+    Private Sub btnCancelEmailOperation_Click(sender As Object, e As EventArgs) Handles btnCancelEmailOperation.Click
+        cancelEmailOperation = True
+        btnCancelEmailOperation.Enabled = False
+        UpdatetsStatusText("Cancelling email screening after the current message...")
+    End Sub
+
+    Private Sub btnCancelForwardingOperation_Click(sender As Object, e As EventArgs) Handles btnCancelForwardingOperation.Click
+        cancelForwardingOperation = True
+        btnCancelForwardingOperation.Enabled = False
+        UpdatetsStatusText("Cancelling the forwarding operation after the current message...")
+    End Sub
+
     Private Sub forwardSearchSince_ValueChanged(sender As Object, e As EventArgs) Handles forwardSearchSince.ValueChanged
         If forwardingUiLoading OrElse forwardingRepository Is Nothing Then Exit Sub
         forwardingRepository.SetSetting("ForwardSearchSinceDate", forwardSearchSince.Value.Date.ToString("yyyy-MM-dd"))
@@ -449,8 +486,10 @@ l1:
             Exit Sub
         End If
 
+        cancelForwardingOperation = False
         btnScanForwarding.Enabled = False
         btnForwardPreviewed.Enabled = False
+        btnCancelForwardingOperation.Enabled = True
         forwardingPreviewMessages.Clear()
         Dim previewTable As New DataTable()
         previewTable.Columns.Add("Sender name")
@@ -464,6 +503,8 @@ l1:
         ToolStrip.Visible = True
         Try
             For Each uid In scanUids
+                Application.DoEvents()
+                If cancelForwardingOperation Then Exit For
                 Dim message = client.Inbox.GetMessage(uid)
                 If ForwardingService.RuleMatches(forwardingPreviewRule, message) Then
                     forwardingPreviewMessages(CInt(uid.Id)) = message
@@ -492,13 +533,15 @@ l1:
             Next
             forwardingPreviewGrid.DataSource = previewTable
             btnForwardPreviewed.Enabled = forwardingPreviewMessages.Count > 0
-            MessageBox.Show($"Preview complete. Found {forwardingPreviewMessages.Count} matching message(s) from {summaryRows.Count} email address(es). Nothing was sent.",
+            Dim previewResult = If(cancelForwardingOperation, "Preview cancelled", "Preview complete")
+            MessageBox.Show($"{previewResult}. Found {forwardingPreviewMessages.Count} matching message(s) from {summaryRows.Count} email address(es). Nothing was sent.",
                             "Preview matches", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Catch ex As Exception
             eUtil.LOGIT($"Forwarding preview failed: {ex.Message}", True)
             MessageBox.Show($"Preview failed: {ex.Message}", "Preview matches", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
             btnScanForwarding.Enabled = True
+            btnCancelForwardingOperation.Enabled = False
         End Try
     End Sub
 
@@ -530,23 +573,29 @@ l1:
             .Enabled = True
         }
         Dim previewRules As New List(Of ForwardingRule) From {previewSendRule}
+        cancelForwardingOperation = False
         btnForwardPreviewed.Enabled = False
+        btnCancelForwardingOperation.Enabled = True
         tsProgressBar.Value = 0
         tsProgressBar.Maximum = Math.Max(1, forwardingPreviewMessages.Count)
         Dim forwardedCount = 0
         Try
             For Each previewMessage In forwardingPreviewMessages
+                Application.DoEvents()
+                If cancelForwardingOperation Then Exit For
                 forwardedCount += ProcessAutoForward(previewMessage.Value, previewMessage.Key, client.Inbox.FullName, True, previewRules)
                 tsProgressBar.Value += 1
                 UpdatetsStatusText($"Forwarding preview {tsProgressBar.Value} of {forwardingPreviewMessages.Count}")
             Next
-            MessageBox.Show($"Forwarding complete. {forwardedCount} message(s) sent; previously sent messages were skipped.",
+            Dim forwardingResult = If(cancelForwardingOperation, "Forwarding cancelled", "Forwarding complete")
+            MessageBox.Show($"{forwardingResult}. {forwardedCount} message(s) sent; previously sent messages were skipped.",
                             "Forward previewed", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Catch ex As Exception
             eUtil.LOGIT($"Forward preview failed: {ex.Message}", True)
             MessageBox.Show($"Forwarding failed: {ex.Message}", "Forward previewed", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
             btnForwardPreviewed.Enabled = True
+            btnCancelForwardingOperation.Enabled = False
         End Try
     End Sub
 
