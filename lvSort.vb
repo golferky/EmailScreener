@@ -416,6 +416,7 @@ Namespace SI.Controls
                         Return -Result
                         '
                 End Select
+                Return 0
             End Function
             Public Sub VisualizeOrder()
                 '

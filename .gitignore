@@ -8,3 +8,4 @@ obj/
 *.nupkg
 packages/
 TestResults/
+.dotnet_cli/

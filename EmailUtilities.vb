@@ -57,12 +57,12 @@ Folder,,,N,|
 DateAdded,D,,N,
 "
 
-    Public sYahoo As String = "Yahoo,imap.mail.yahoo.com,gary_scudder,ncaneqoqpbdcuhae"
-    Public sGmail As String = "*Gmail,imap.gmail.com,garyrscudder,7diKS7bW6zZ2wcXB8bpJ"
+    Public sYahoo As String = AppConfiguration.BuildAccount("Yahoo", "imap.mail.yahoo.com", "EMAILSCREENER_YAHOO_USER", "EMAILSCREENER_YAHOO_APP_PASSWORD")
+    Public sGmail As String = AppConfiguration.BuildAccount("*Gmail", "imap.gmail.com", "EMAILSCREENER_GMAIL_USER", "EMAILSCREENER_GMAIL_APP_PASSWORD")
     Public conn As SqliteConnection
-    Public sqlConn As String = "Data Source=192.168.1.31;Initial Catalog=Email;User ID=greg;Password=1234;Encrypt=False;TrustServerCertificate=True;Connect Timeout=300"
-    Public sqlitePath As String = "C:\EmailScreener\GarysEmails.db"
-    Public sqliteConnStr As String = "Data Source=C:\EmailScreener\GarysEmails.db;"
+    Public sqlConn As String = AppConfiguration.SqlConnectionString
+    Public sqlitePath As String = AppConfiguration.SqlitePath
+    Public sqliteConnStr As String = $"Data Source={AppConfiguration.SqlitePath};"
 
     Sub New()
         lEmailClients = New List(Of String)
@@ -97,7 +97,7 @@ DateAdded,D,,N,
             'End If
             If spam Then
                 If Not encodedString.Contains(173) Then
-                    Exit Function
+                    Return False
                 End If
             End If
             Dim drow As DataRow = Nothing
@@ -148,14 +148,16 @@ DateAdded,D,,N,
             End If
 
         Catch ex As Exception
-        Finally
-
-
+            LOGIT($"UpdateIt failed for UID {uidid}: {ex.Message}", True)
         End Try
-
+        Return False
     End Function
     Function Connect() As IImapClient
         Try
+
+            If String.IsNullOrWhiteSpace(sThisEmailUser) OrElse String.IsNullOrWhiteSpace(sThisEmailPassword) Then
+                Throw New InvalidOperationException("Email credentials are not configured. See README.md for the required EMAILSCREENER environment variables.")
+            End If
 
             'Dim oFiles() As IO.FileInfo
             'Dim oDirectory As New IO.DirectoryInfo("Y:\")
@@ -660,6 +662,7 @@ ByVal sepChar As String, Optional appendcsv As Boolean = False)
     End Sub
     Function UpdateEmailData(drow As DataRow) As Long
         Dim sql = ""
+        Dim rowsAffected As Long = 0
         Try
             sql = $"SELECT uid FROM emails WHERE [from] = '{drow("from").ToString.Replace("'", "''")}' AND datereceived = '{drow("datereceived")}'"
             Dim cmd As SQLiteCommand = New SQLiteCommand(sql, conn)
@@ -690,12 +693,13 @@ ByVal sepChar As String, Optional appendcsv As Boolean = False)
 
                 Dim insertCmd As New SQLiteCommand(sql, conn)
                 insertCmd.CommandTimeout = 300
-                insertCmd.ExecuteNonQuery()
+                rowsAffected = insertCmd.ExecuteNonQuery()
             End If
 
         Catch ex As Exception
             Debug.Print($"UpdateEmailData error: {sql} {ex.Message}")
         End Try
+        Return rowsAffected
     End Function
     Sub CreateTableOnDBServer(tableName As String)
         Dim sqlText As String = "" '= "select * From Emails order by uid desc"
@@ -874,9 +878,8 @@ ByVal sepChar As String, Optional appendcsv As Boolean = False)
         Using client = New ImapClient(New ProtocolLogger("imap.log"))
             Dim j As Integer = 1
 l1:
-            client.Connect("imap.mail.yahoo.com", 993, True)
-            'setup yahoo Generate App Password called Emailscreener and copy that password and paste here
-            client.Authenticate("gary_scudder", "ncaneqoqpbdcuhae")
+            client.Connect(sThisEmailService, 993, True)
+            client.Authenticate(sThisEmailUser, sThisEmailPassword)
             Dim inbox = client.Inbox
             inbox.Open(FolderAccess.[ReadOnly])
             Dim uids = client.Inbox.Search(SearchQuery.NotSeen)
@@ -1042,7 +1045,7 @@ l1:
         Dim semailfile As String = ""
         Dim sfn = semailfile
 
-        Dim ToAddresses As New List(Of String)  '{"garyrscudder@gmail.com", "garyrscudder@gmail.com"}
+        Dim ToAddresses As New List(Of String)
 
         Dim mbr = MsgBox(String.Format("are you ready to send emails to {0} players?", ToAddresses.Count), MsgBoxStyle.YesNo)
         If mbr <> MsgBoxResult.Yes Then
@@ -1069,7 +1072,7 @@ l1:
     Sub GetGmail()
         'Using client = New ImapClient(New ProtocolLogger("imap.log"))
         '    client.Connect("imap.gmail.com", 993, True)
-        '    client.Authenticate("garyrscudder", "7diKS7bW6zZ2wcXB8bpJ")
+        '    client.Authenticate(sThisEmailUser, sThisEmailPassword)
         '    Dim inbox = client.Inbox
         '    inbox.Open(FolderAccess.[ReadOnly])
         '    Console.WriteLine("Total messages: {0}", inbox.Count)

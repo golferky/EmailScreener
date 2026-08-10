@@ -12,11 +12,27 @@ Public Class Emails
     Dim dtEmails As DataTable
     Public sPgm As String = System.Diagnostics.Process.GetCurrentProcess().ProcessName
     Dim eUtil As New eUtilities
-    Private WithEvents keepAliveTimer As New Windows.Forms.Timer With {.Interval = 240000}
+    Private WithEvents keepAliveTimer As New System.Windows.Forms.Timer With {.Interval = 240000}
     Private keepAliveBusy As Boolean = False
+    Private forwardingRepository As ForwardingRepository
+    Private forwardingService As New ForwardingService()
+    Private forwardingRules As New List(Of ForwardingRule)
+    Private forwardingUiLoading As Boolean
+    Private selectedForwardingRuleId As Integer
+    Private forwardingTabs As TabControl
+    Private forwardingGrid As DataGridView
+    Private WithEvents cbAutoForward As CheckBox
+    Private WithEvents cmbForwardMatchType As ComboBox
+    Private WithEvents txtForwardMatchValue As TextBox
+    Private WithEvents txtForwardDestination As TextBox
+    Private WithEvents cbForwardRuleEnabled As CheckBox
+    Private WithEvents btnSaveForwardRule As Button
+    Private WithEvents btnDeleteForwardRule As Button
+    Private WithEvents btnUseSelectedSender As Button
 
     Private Sub Emails_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         loadscreen()
+        InitializeForwardingTab()
         ToolStrip.Visible = False
         Me.Text = $"Form {Me.CompanyName}-{My.Computer.Name}, Resolution {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}, Menu {Me.Width} x {Me.Height}, Grid {dgvEmails.Width} x {dgvEmails.Height}"
 
@@ -38,6 +54,7 @@ Public Class Emails
             eUtil.getdbInfo()
             dtEmails = eUtil.dtEmails
             dgvEmails.DataSource = dtEmails
+            InitializeForwardingData()
         Else
             MessageBox.Show("Database not found. Please click Convert button to migrate from SQL Server.", "No Database", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Exit Sub
@@ -149,6 +166,7 @@ l1:
                     If eUtil.UpdateIt(uids1.Id, client.Inbox.FullName, message, If(cbSpam.Checked, True, False)) Then
                         tbSpam.Text += 1
                     End If
+                    ProcessAutoForward(message, uids1.Id, client.Inbox.FullName)
                     'Console.WriteLine("You have {0} unread message(s).", uids.Count - i)
                     'Debug.Print("You have {0} unread message(s).", uids.Count - i)
                     If dtEmails.Rows.Count = 0 Then Continue For
@@ -245,7 +263,210 @@ l1:
         Application.DoEvents()
     End Sub
 
-    Private Sub Resize(sender As Object, e As EventArgs) Handles MyBase.Resize
+    Private Sub InitializeForwardingTab()
+        If forwardingTabs IsNot Nothing Then Exit Sub
+
+        Dim emailTab As New TabPage("Email screening") With {.AutoScroll = True}
+        Dim forwardTab As New TabPage("Auto forwarding")
+        Dim controlsToMove As New List(Of Control)
+        For Each control As Control In Controls
+            If control IsNot ToolStrip Then controlsToMove.Add(control)
+        Next
+        For Each control In controlsToMove
+            emailTab.Controls.Add(control)
+        Next
+
+        forwardingTabs = New TabControl With {.Dock = DockStyle.Fill}
+        forwardingTabs.TabPages.Add(emailTab)
+        forwardingTabs.TabPages.Add(forwardTab)
+        Controls.Add(forwardingTabs)
+        forwardingTabs.BringToFront()
+        ToolStrip.BringToFront()
+
+        Dim instructions As New Label With {
+            .AutoSize = False,
+            .Location = New Point(20, 15),
+            .Size = New Size(1200, 38),
+            .Text = "Forward matching unread messages to Gmail. Each original message is attached intact, and each account/folder/UID/destination is sent only once."
+        }
+        cbAutoForward = New CheckBox With {
+            .AutoSize = True,
+            .Location = New Point(20, 58),
+            .Text = "Enable automatic forwarding while screening unread mail"
+        }
+        cmbForwardMatchType = New ComboBox With {
+            .DropDownStyle = ComboBoxStyle.DropDownList,
+            .Location = New Point(20, 112),
+            .Size = New Size(130, 23)
+        }
+        cmbForwardMatchType.Items.AddRange(New Object() {"Sender", "Domain"})
+        cmbForwardMatchType.SelectedIndex = 0
+        txtForwardMatchValue = New TextBox With {.Location = New Point(165, 112), .Size = New Size(290, 23)}
+        txtForwardDestination = New TextBox With {.Location = New Point(470, 112), .Size = New Size(290, 23)}
+        cbForwardRuleEnabled = New CheckBox With {.AutoSize = True, .Location = New Point(775, 114), .Text = "Rule enabled", .Checked = True}
+        btnSaveForwardRule = New Button With {.Location = New Point(885, 109), .Size = New Size(105, 28), .Text = "Add rule"}
+        btnDeleteForwardRule = New Button With {.Location = New Point(1000, 109), .Size = New Size(105, 28), .Text = "Delete rule", .Enabled = False}
+        btnUseSelectedSender = New Button With {.Location = New Point(1115, 109), .Size = New Size(150, 28), .Text = "Use selected sender"}
+
+        Dim matchLabel As New Label With {.AutoSize = True, .Location = New Point(20, 91), .Text = "Match type"}
+        Dim valueLabel As New Label With {.AutoSize = True, .Location = New Point(165, 91), .Text = "Sender email or domain"}
+        Dim destinationLabel As New Label With {.AutoSize = True, .Location = New Point(470, 91), .Text = "Destination Gmail address"}
+
+        forwardingGrid = New DataGridView With {
+            .Location = New Point(20, 155),
+            .Size = New Size(1245, 500),
+            .Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right,
+            .AllowUserToAddRows = False,
+            .AllowUserToDeleteRows = False,
+            .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            .ReadOnly = True,
+            .RowHeadersVisible = False,
+            .SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            .MultiSelect = False
+        }
+        AddHandler forwardingGrid.CellClick, AddressOf forwardingGrid_CellClick
+
+        forwardTab.Controls.AddRange(New Control() {
+            instructions, cbAutoForward, matchLabel, cmbForwardMatchType, valueLabel, txtForwardMatchValue,
+            destinationLabel, txtForwardDestination, cbForwardRuleEnabled, btnSaveForwardRule,
+            btnDeleteForwardRule, btnUseSelectedSender, forwardingGrid
+        })
+    End Sub
+
+    Private Sub InitializeForwardingData()
+        Try
+            forwardingRepository = New ForwardingRepository(eUtil.sqlitePath)
+            forwardingUiLoading = True
+            cbAutoForward.Checked = forwardingRepository.GetAutoForwardEnabled()
+            RefreshForwardingRules()
+        Catch ex As Exception
+            cbAutoForward.Enabled = False
+            UpdatetsStatusText($"Forwarding setup failed: {ex.Message}")
+        Finally
+            forwardingUiLoading = False
+        End Try
+    End Sub
+
+    Private Sub RefreshForwardingRules()
+        If forwardingRepository Is Nothing Then Exit Sub
+        forwardingRules = forwardingRepository.LoadRules()
+        forwardingGrid.DataSource = Nothing
+        forwardingGrid.DataSource = forwardingRules
+        If forwardingGrid.Columns.Contains("Id") Then forwardingGrid.Columns("Id").Visible = False
+    End Sub
+
+    Private Sub ProcessAutoForward(message As MimeKit.MimeMessage, uid As Integer, folder As String)
+        If forwardingRepository Is Nothing OrElse Not cbAutoForward.Checked Then Exit Sub
+        Try
+            Dim smtpHost = AppConfiguration.GetSmtpHost(eUtil.sThisEmailService)
+            Dim count = forwardingService.ForwardMatching(
+                message,
+                uid,
+                cmbEmailClients.SelectedItem.ToString(),
+                folder,
+                smtpHost,
+                eUtil.sThisEmailUser,
+                eUtil.sThisEmailPassword,
+                forwardingRules,
+                forwardingRepository)
+            If count > 0 Then eUtil.LOGIT($"Auto-forwarded UID {uid} to {count} destination(s)")
+        Catch ex As Exception
+            eUtil.LOGIT($"Auto-forward failed for UID {uid}: {ex.Message}", True)
+            UpdatetsStatusText($"Auto-forward failed for UID {uid}: {ex.Message}")
+        End Try
+    End Sub
+
+    Private Sub cbAutoForward_CheckedChanged(sender As Object, e As EventArgs) Handles cbAutoForward.CheckedChanged
+        If forwardingUiLoading OrElse forwardingRepository Is Nothing Then Exit Sub
+        forwardingRepository.SetAutoForwardEnabled(cbAutoForward.Checked)
+    End Sub
+
+    Private Sub btnSaveForwardRule_Click(sender As Object, e As EventArgs) Handles btnSaveForwardRule.Click
+        If forwardingRepository Is Nothing Then Exit Sub
+        Dim matchValue = txtForwardMatchValue.Text.Trim()
+        Dim destination = txtForwardDestination.Text.Trim()
+        If String.IsNullOrWhiteSpace(matchValue) Then
+            MessageBox.Show("Enter a sender email address or domain.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+        If Not IsValidEmailAddress(destination) Then
+            MessageBox.Show("Enter a valid destination Gmail address.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+        If Not destination.EndsWith("@gmail.com", StringComparison.OrdinalIgnoreCase) AndAlso
+           Not destination.EndsWith("@googlemail.com", StringComparison.OrdinalIgnoreCase) Then
+            MessageBox.Show("The forwarding destination must be a Gmail address.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+
+        Dim rule As New ForwardingRule With {
+            .Id = selectedForwardingRuleId,
+            .MatchType = cmbForwardMatchType.Text,
+            .MatchValue = matchValue,
+            .Destination = destination,
+            .Enabled = cbForwardRuleEnabled.Checked
+        }
+        forwardingRepository.SaveRule(rule)
+        ClearForwardingEditor()
+        RefreshForwardingRules()
+    End Sub
+
+    Private Sub btnDeleteForwardRule_Click(sender As Object, e As EventArgs) Handles btnDeleteForwardRule.Click
+        If forwardingRepository Is Nothing OrElse selectedForwardingRuleId = 0 Then Exit Sub
+        If MessageBox.Show("Delete the selected forwarding rule?", "Forwarding rule", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Exit Sub
+        forwardingRepository.DeleteRule(selectedForwardingRuleId)
+        ClearForwardingEditor()
+        RefreshForwardingRules()
+    End Sub
+
+    Private Sub btnUseSelectedSender_Click(sender As Object, e As EventArgs) Handles btnUseSelectedSender.Click
+        If dgvEmails.CurrentRow Is Nothing OrElse Not dgvEmails.Columns.Contains("From") Then
+            MessageBox.Show("Select an email on the Email screening tab first.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Exit Sub
+        End If
+        txtForwardMatchValue.Text = ExtractEmailAddress(Convert.ToString(dgvEmails.CurrentRow.Cells("From").Value))
+        cmbForwardMatchType.SelectedItem = "Sender"
+    End Sub
+
+    Private Sub forwardingGrid_CellClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 Then Exit Sub
+        Dim rule = TryCast(forwardingGrid.Rows(e.RowIndex).DataBoundItem, ForwardingRule)
+        If rule Is Nothing Then Exit Sub
+        selectedForwardingRuleId = rule.Id
+        cmbForwardMatchType.SelectedItem = rule.MatchType
+        txtForwardMatchValue.Text = rule.MatchValue
+        txtForwardDestination.Text = rule.Destination
+        cbForwardRuleEnabled.Checked = rule.Enabled
+        btnSaveForwardRule.Text = "Update rule"
+        btnDeleteForwardRule.Enabled = True
+    End Sub
+
+    Private Sub ClearForwardingEditor()
+        selectedForwardingRuleId = 0
+        cmbForwardMatchType.SelectedIndex = 0
+        txtForwardMatchValue.Clear()
+        txtForwardDestination.Clear()
+        cbForwardRuleEnabled.Checked = True
+        btnSaveForwardRule.Text = "Add rule"
+        btnDeleteForwardRule.Enabled = False
+    End Sub
+
+    Private Shared Function IsValidEmailAddress(value As String) As Boolean
+        Try
+            Dim address As New System.Net.Mail.MailAddress(value)
+            Return String.Equals(address.Address, value, StringComparison.OrdinalIgnoreCase)
+        Catch ex As FormatException
+            Return False
+        End Try
+    End Function
+
+    Private Shared Function ExtractEmailAddress(value As String) As String
+        Dim match = System.Text.RegularExpressions.Regex.Match(value, "[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+        If match.Success Then Return match.Value
+        Return value.Trim()
+    End Function
+
+    Private Sub Emails_Resize(sender As Object, e As EventArgs) Handles MyBase.Resize
         'rs.ResizeAllControls(Me)
         'Me.Text = String.Format("Form {7}-{0}, Resolution {1} x {2}, Menu {3} x {4}, Grid {5} x {6}", My.Computer.Name, Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Width, Me.Width, Me.Height, dgvEmails.Width, dgvEmails.Height, Me)
         Me.Text = $"Form {Me.Name}-{My.Computer.Name}, Resolution {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}, Menu {Me.Width} x {Me.Height}, Grid {dgvEmails.Width} x {dgvEmails.Height}"
@@ -307,7 +528,7 @@ l1:
         Dim col = sender
         If col.currentcell.OwningColumn.Name = "Spam" Then
             Dim mbr = MsgBox($"Changing email to Spam {dgvEmails.Rows(e.RowIndex).Cells("Domain").Value}-{dgvEmails.Rows(e.RowIndex).Cells("Sender").Value} ", vbOKCancel)
-            If mbr.Ok Then
+            If mbr = MsgBoxResult.Ok Then
                 'col.currentcell.value = DBNull.Value
                 col.currentcell.value = True
             End If

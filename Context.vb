@@ -17,7 +17,7 @@
 
         Try
             ' 1. Get the stack trace from the helper inside the context
-            Dim st = ctx.ShowStackTrace()
+            Dim st = Context.ShowStackTrace()
 
             If Debugger.IsAttached Then
                 Debug.WriteLine(sMess)
