@@ -43,4 +43,17 @@ Public NotInheritable Class AppConfiguration
                 Return GetEnvironment("EMAILSCREENER_SMTP_HOST")
         End Select
     End Function
+
+    Public Shared Function GetAccountEmailAddress(imapHost As String, userName As String) As String
+        Dim address = If(userName, String.Empty).Trim()
+        If address.Contains("@"c) Then Return address
+        Select Case If(imapHost, String.Empty).ToLowerInvariant()
+            Case "imap.gmail.com"
+                Return $"{address}@gmail.com"
+            Case "imap.mail.yahoo.com"
+                Return $"{address}@yahoo.com"
+            Case Else
+                Return address
+        End Select
+    End Function
 End Class

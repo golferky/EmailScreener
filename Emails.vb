@@ -44,7 +44,7 @@ Public Class Emails
         loadscreen()
         InitializeForwardingTab()
         ToolStrip.Visible = False
-        Me.Text = $"Form {Me.CompanyName}-{My.Computer.Name}, Resolution {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}, Menu {Me.Width} x {Me.Height}, Grid {dgvEmails.Width} x {dgvEmails.Height}"
+        UpdateWindowTitle()
 
         For Each sclient As String In eUtil.lEmailClients
             cmbEmailClients.Items.Add(sclient.Split(",")(0))
@@ -388,7 +388,7 @@ l1:
             Dim savedDate = forwardingRepository.GetSetting("ForwardSearchSinceDate")
             Dim parsedDate As DateTime
             If DateTime.TryParse(savedDate, parsedDate) Then forwardSearchSince.Value = parsedDate
-            Dim configuredDestination = AppConfiguration.GetEnvironment("EMAILSCREENER_GMAIL_USER")
+            Dim configuredDestination = AppConfiguration.GetAccountEmailAddress("imap.gmail.com", AppConfiguration.GetEnvironment("EMAILSCREENER_GMAIL_USER"))
             If IsValidEmailAddress(configuredDestination) Then txtForwardDestination.Text = configuredDestination
             RefreshForwardingRules()
         Catch ex As Exception
@@ -415,6 +415,7 @@ l1:
         If forwardingRepository Is Nothing OrElse (Not force AndAlso Not cbAutoForward.Checked) Then Return 0
         Try
             Dim smtpHost = AppConfiguration.GetSmtpHost(eUtil.sThisEmailService)
+            Dim smtpUser = AppConfiguration.GetAccountEmailAddress(eUtil.sThisEmailService, eUtil.sThisEmailUser)
             Dim rulesToApply = If(rulesOverride, forwardingRules)
             Dim count = forwardingService.ForwardMatching(
                 message,
@@ -422,7 +423,7 @@ l1:
                 cmbEmailClients.SelectedItem.ToString(),
                 folder,
                 smtpHost,
-                eUtil.sThisEmailUser,
+                smtpUser,
                 eUtil.sThisEmailPassword,
                 rulesToApply,
                 forwardingRepository)
@@ -711,7 +712,11 @@ l1:
     Private Sub Emails_Resize(sender As Object, e As EventArgs) Handles MyBase.Resize
         'rs.ResizeAllControls(Me)
         'Me.Text = String.Format("Form {7}-{0}, Resolution {1} x {2}, Menu {3} x {4}, Grid {5} x {6}", My.Computer.Name, Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Width, Me.Width, Me.Height, dgvEmails.Width, dgvEmails.Height, Me)
-        Me.Text = $"Form {Me.Name}-{My.Computer.Name}, Resolution {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}, Menu {Me.Width} x {Me.Height}, Grid {dgvEmails.Width} x {dgvEmails.Height}"
+        UpdateWindowTitle()
+    End Sub
+
+    Private Sub UpdateWindowTitle()
+        Me.Text = $"EmailScreener v{Application.ProductVersion} — {My.Computer.Name} — {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}"
     End Sub
 
     'Private Sub dgvEmails_CellDoubleClick(sender As Object, e As DataGridViewCellEventArgs) Handles dgvEmails.CellDoubleClick
