@@ -39,6 +39,20 @@ Public Class Emails
     Private cancelForwardingOperation As Boolean
     Private WithEvents btnCancelEmailOperation As Button
     Private WithEvents btnCancelForwardingOperation As Button
+    Private mailAccountRepository As MailAccountRepository
+    Private mailAccounts As New List(Of MailAccount)
+    Private selectedMailAccountId As Integer
+    Private mailAccountsGrid As DataGridView
+    Private WithEvents cmbAccountProvider As ComboBox
+    Private WithEvents txtAccountName As TextBox
+    Private WithEvents txtAccountUser As TextBox
+    Private WithEvents txtAccountImap As TextBox
+    Private WithEvents txtAccountSmtp As TextBox
+    Private WithEvents txtAccountPassword As TextBox
+    Private WithEvents cbAccountEnabled As CheckBox
+    Private WithEvents btnSaveMailAccount As Button
+    Private WithEvents btnDeleteMailAccount As Button
+    Private WithEvents btnClearMailAccount As Button
 
     Private Sub Emails_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         loadscreen()
@@ -46,16 +60,12 @@ Public Class Emails
         ToolStrip.Visible = False
         UpdateWindowTitle()
 
-        For Each sclient As String In eUtil.lEmailClients
-            cmbEmailClients.Items.Add(sclient.Split(",")(0))
-        Next
-        cmbEmailClients.SelectedIndex = 0
-        ApplySelectedEmailClientConfiguration()
         If System.IO.File.Exists(eUtil.sqlitePath) Then
             eUtil.openconn()
             eUtil.getdbInfo()
             dtEmails = eUtil.dtEmails
             dgvEmails.DataSource = dtEmails
+            InitializeMailAccountData()
             InitializeForwardingData()
         Else
             MessageBox.Show("Database not found. Please click Convert button to migrate from SQL Server.", "No Database", MessageBoxButtons.OK, MessageBoxIcon.Warning)
@@ -86,7 +96,7 @@ Public Class Emails
         Next
 
         Me.Show()
-        tbMailClient.Text = cmbEmailClients.SelectedItem
+        If cmbEmailClients.SelectedItem IsNot Nothing Then tbMailClient.Text = cmbEmailClients.SelectedItem.ToString()
     End Sub
     Sub loadscreen()
         Dim allScreens = Screen.AllScreens
@@ -283,6 +293,7 @@ l1:
 
         Dim emailTab As New TabPage("Email screening") With {.AutoScroll = True}
         Dim forwardTab As New TabPage("Auto forwarding")
+        Dim accountsTab As New TabPage("Mail accounts") With {.AutoScroll = True}
         Dim controlsToMove As New List(Of Control)
         For Each control As Control In Controls
             If control IsNot ToolStrip Then controlsToMove.Add(control)
@@ -301,6 +312,7 @@ l1:
         forwardingTabs = New TabControl With {.Dock = DockStyle.Fill}
         forwardingTabs.TabPages.Add(emailTab)
         forwardingTabs.TabPages.Add(forwardTab)
+        forwardingTabs.TabPages.Add(accountsTab)
         Controls.Add(forwardingTabs)
         forwardingTabs.BringToFront()
         ToolStrip.BringToFront()
@@ -378,6 +390,208 @@ l1:
             destinationLabel, txtForwardDestination, cbForwardRuleEnabled, btnSaveForwardRule,
             btnDeleteForwardRule, btnUseSelectedSender, forwardingGrid, previewLabel, forwardingPreviewGrid
         })
+        InitializeMailAccountsTab(accountsTab)
+    End Sub
+
+    Private Sub InitializeMailAccountsTab(accountsTab As TabPage)
+        Dim instructions As New Label With {
+            .AutoSize = False,
+            .Location = New Point(20, 15),
+            .Size = New Size(1210, 42),
+            .Text = "Add Gmail, Yahoo, or custom IMAP accounts. Account details are saved in SQLite; app passwords are saved in your Windows user environment and are never stored in the database."
+        }
+        Dim providerLabel As New Label With {.AutoSize = True, .Location = New Point(20, 72), .Text = "Provider"}
+        cmbAccountProvider = New ComboBox With {
+            .DropDownStyle = ComboBoxStyle.DropDownList,
+            .Location = New Point(20, 94),
+            .Size = New Size(145, 23)
+        }
+        cmbAccountProvider.Items.AddRange(New Object() {"Gmail", "Yahoo", "Custom"})
+
+        Dim nameLabel As New Label With {.AutoSize = True, .Location = New Point(180, 72), .Text = "Account name"}
+        txtAccountName = New TextBox With {.Location = New Point(180, 94), .Size = New Size(190, 23)}
+        Dim userLabel As New Label With {.AutoSize = True, .Location = New Point(385, 72), .Text = "Email address / username"}
+        txtAccountUser = New TextBox With {.Location = New Point(385, 94), .Size = New Size(260, 23)}
+        Dim passwordLabel As New Label With {.AutoSize = True, .Location = New Point(660, 72), .Text = "App password (blank keeps existing)"}
+        txtAccountPassword = New TextBox With {
+            .Location = New Point(660, 94),
+            .Size = New Size(225, 23),
+            .UseSystemPasswordChar = True
+        }
+        cbAccountEnabled = New CheckBox With {.AutoSize = True, .Location = New Point(900, 97), .Text = "Enabled", .Checked = True}
+
+        Dim imapLabel As New Label With {.AutoSize = True, .Location = New Point(20, 132), .Text = "IMAP server"}
+        txtAccountImap = New TextBox With {.Location = New Point(20, 154), .Size = New Size(270, 23)}
+        Dim smtpLabel As New Label With {.AutoSize = True, .Location = New Point(305, 132), .Text = "SMTP server"}
+        txtAccountSmtp = New TextBox With {.Location = New Point(305, 154), .Size = New Size(270, 23)}
+        btnSaveMailAccount = New Button With {.Location = New Point(600, 150), .Size = New Size(125, 28), .Text = "Add account"}
+        btnDeleteMailAccount = New Button With {.Location = New Point(740, 150), .Size = New Size(125, 28), .Text = "Delete account", .Enabled = False}
+        btnClearMailAccount = New Button With {.Location = New Point(880, 150), .Size = New Size(125, 28), .Text = "New account"}
+
+        Dim passwordNote As New Label With {
+            .AutoSize = False,
+            .Location = New Point(20, 192),
+            .Size = New Size(1210, 38),
+            .Text = "For Gmail and Yahoo, use an app password rather than the normal account password. Existing passwords are never displayed."
+        }
+        mailAccountsGrid = New DataGridView With {
+            .Location = New Point(20, 235),
+            .Size = New Size(1245, 380),
+            .Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right,
+            .AllowUserToAddRows = False,
+            .AllowUserToDeleteRows = False,
+            .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            .ReadOnly = True,
+            .RowHeadersVisible = False,
+            .SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            .MultiSelect = False
+        }
+        AddHandler mailAccountsGrid.CellClick, AddressOf mailAccountsGrid_CellClick
+
+        accountsTab.Controls.AddRange(New Control() {
+            instructions, providerLabel, cmbAccountProvider, nameLabel, txtAccountName, userLabel, txtAccountUser,
+            passwordLabel, txtAccountPassword, cbAccountEnabled, imapLabel, txtAccountImap, smtpLabel, txtAccountSmtp,
+            btnSaveMailAccount, btnDeleteMailAccount, btnClearMailAccount, passwordNote, mailAccountsGrid
+        })
+        cmbAccountProvider.SelectedIndex = 0
+    End Sub
+
+    Private Sub InitializeMailAccountData()
+        Try
+            mailAccountRepository = New MailAccountRepository(eUtil.sqlitePath)
+            RefreshMailAccounts()
+            ClearMailAccountEditor()
+        Catch ex As Exception
+            UpdatetsStatusText($"Mail account setup failed: {ex.Message}")
+        End Try
+    End Sub
+
+    Private Sub RefreshMailAccounts(Optional preferredName As String = Nothing)
+        If mailAccountRepository Is Nothing Then Exit Sub
+        mailAccounts = mailAccountRepository.LoadAccounts()
+        mailAccountsGrid.DataSource = Nothing
+        mailAccountsGrid.DataSource = mailAccounts
+        If mailAccountsGrid.Columns.Contains("Id") Then mailAccountsGrid.Columns("Id").Visible = False
+        If mailAccountsGrid.Columns.Contains("PasswordEnvironmentVariable") Then mailAccountsGrid.Columns("PasswordEnvironmentVariable").Visible = False
+
+        Dim previousSelection = If(preferredName, If(cmbEmailClients.SelectedItem?.ToString(), String.Empty))
+        eUtil.lEmailClients = mailAccounts.Where(Function(account) account.Enabled).ToList()
+        cmbEmailClients.Items.Clear()
+        For Each account In eUtil.lEmailClients
+            cmbEmailClients.Items.Add(account.DisplayName)
+        Next
+        If Not String.IsNullOrWhiteSpace(previousSelection) AndAlso cmbEmailClients.Items.Contains(previousSelection) Then
+            cmbEmailClients.SelectedItem = previousSelection
+        ElseIf cmbEmailClients.Items.Count > 0 Then
+            cmbEmailClients.SelectedIndex = 0
+        End If
+        ApplySelectedEmailClientConfiguration()
+    End Sub
+
+    Private Sub mailAccountsGrid_CellClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 Then Exit Sub
+        Dim account = TryCast(mailAccountsGrid.Rows(e.RowIndex).DataBoundItem, MailAccount)
+        If account Is Nothing Then Exit Sub
+        selectedMailAccountId = account.Id
+        txtAccountName.Text = account.DisplayName
+        txtAccountUser.Text = account.UserName
+        txtAccountImap.Text = account.ImapHost
+        txtAccountSmtp.Text = account.SmtpHost
+        txtAccountPassword.Clear()
+        cbAccountEnabled.Checked = account.Enabled
+        If account.ImapHost.Equals("imap.gmail.com", StringComparison.OrdinalIgnoreCase) Then
+            cmbAccountProvider.SelectedItem = "Gmail"
+        ElseIf account.ImapHost.Equals("imap.mail.yahoo.com", StringComparison.OrdinalIgnoreCase) Then
+            cmbAccountProvider.SelectedItem = "Yahoo"
+        Else
+            cmbAccountProvider.SelectedItem = "Custom"
+        End If
+        btnSaveMailAccount.Text = "Update account"
+        btnDeleteMailAccount.Enabled = True
+    End Sub
+
+    Private Sub cmbAccountProvider_SelectedIndexChanged(sender As Object, e As EventArgs) Handles cmbAccountProvider.SelectedIndexChanged
+        If txtAccountImap Is Nothing OrElse txtAccountSmtp Is Nothing Then Exit Sub
+        Select Case cmbAccountProvider.Text
+            Case "Gmail"
+                txtAccountImap.Text = "imap.gmail.com"
+                txtAccountSmtp.Text = "smtp.gmail.com"
+            Case "Yahoo"
+                txtAccountImap.Text = "imap.mail.yahoo.com"
+                txtAccountSmtp.Text = "smtp.mail.yahoo.com"
+        End Select
+    End Sub
+
+    Private Sub btnSaveMailAccount_Click(sender As Object, e As EventArgs) Handles btnSaveMailAccount.Click
+        If mailAccountRepository Is Nothing Then Exit Sub
+        Dim displayName = txtAccountName.Text.Trim()
+        Dim userName = txtAccountUser.Text.Trim()
+        Dim imapHost = txtAccountImap.Text.Trim()
+        Dim smtpHost = txtAccountSmtp.Text.Trim()
+        If String.IsNullOrWhiteSpace(displayName) OrElse String.IsNullOrWhiteSpace(userName) OrElse
+           String.IsNullOrWhiteSpace(imapHost) OrElse String.IsNullOrWhiteSpace(smtpHost) Then
+            MessageBox.Show("Enter an account name, email address, IMAP server, and SMTP server.", "Mail account", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+
+        Dim existing = mailAccounts.FirstOrDefault(Function(account) account.Id = selectedMailAccountId)
+        Dim passwordVariable = If(existing?.PasswordEnvironmentVariable, AppConfiguration.BuildPasswordVariable($"{displayName}_{userName}"))
+        If selectedMailAccountId = 0 AndAlso String.IsNullOrWhiteSpace(txtAccountPassword.Text) Then
+            MessageBox.Show("Enter an app password for the new account.", "Mail account", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+
+        Try
+            If Not String.IsNullOrWhiteSpace(txtAccountPassword.Text) Then
+                AppConfiguration.SetUserEnvironment(passwordVariable, txtAccountPassword.Text.Replace(" ", String.Empty))
+            End If
+            Dim account As New MailAccount With {
+                .Id = selectedMailAccountId,
+                .DisplayName = displayName,
+                .UserName = userName,
+                .ImapHost = imapHost,
+                .SmtpHost = smtpHost,
+                .PasswordEnvironmentVariable = passwordVariable,
+                .Enabled = cbAccountEnabled.Checked
+            }
+            mailAccountRepository.SaveAccount(account)
+            If IsClientConnected() Then SafeDisconnectClient()
+            btnConnect.Visible = True
+            RefreshMailAccounts(displayName)
+            ClearMailAccountEditor()
+            UpdatetsStatusText($"Mail account '{displayName}' saved")
+        Catch ex As Exception
+            MessageBox.Show($"The mail account could not be saved: {ex.Message}", "Mail account", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+
+    Private Sub btnDeleteMailAccount_Click(sender As Object, e As EventArgs) Handles btnDeleteMailAccount.Click
+        If mailAccountRepository Is Nothing OrElse selectedMailAccountId = 0 Then Exit Sub
+        Dim account = mailAccounts.FirstOrDefault(Function(item) item.Id = selectedMailAccountId)
+        If account Is Nothing Then Exit Sub
+        If MessageBox.Show($"Delete the mail account '{account.DisplayName}'? Its app-password environment setting will not be deleted.",
+                           "Delete mail account", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Exit Sub
+        If IsClientConnected() Then SafeDisconnectClient()
+        mailAccountRepository.DeleteAccount(account.Id)
+        btnConnect.Visible = True
+        RefreshMailAccounts()
+        ClearMailAccountEditor()
+        UpdatetsStatusText($"Mail account '{account.DisplayName}' deleted")
+    End Sub
+
+    Private Sub btnClearMailAccount_Click(sender As Object, e As EventArgs) Handles btnClearMailAccount.Click
+        ClearMailAccountEditor()
+    End Sub
+
+    Private Sub ClearMailAccountEditor()
+        selectedMailAccountId = 0
+        If cmbAccountProvider IsNot Nothing Then cmbAccountProvider.SelectedItem = "Gmail"
+        txtAccountName?.Clear()
+        txtAccountUser?.Clear()
+        txtAccountPassword?.Clear()
+        If cbAccountEnabled IsNot Nothing Then cbAccountEnabled.Checked = True
+        If btnSaveMailAccount IsNot Nothing Then btnSaveMailAccount.Text = "Add account"
+        If btnDeleteMailAccount IsNot Nothing Then btnDeleteMailAccount.Enabled = False
     End Sub
 
     Private Sub InitializeForwardingData()
@@ -388,7 +602,9 @@ l1:
             Dim savedDate = forwardingRepository.GetSetting("ForwardSearchSinceDate")
             Dim parsedDate As DateTime
             If DateTime.TryParse(savedDate, parsedDate) Then forwardSearchSince.Value = parsedDate
-            Dim configuredDestination = AppConfiguration.GetAccountEmailAddress("imap.gmail.com", AppConfiguration.GetEnvironment("EMAILSCREENER_GMAIL_USER"))
+            Dim destinationAccount = mailAccounts.FirstOrDefault(Function(account) account.Enabled AndAlso account.ImapHost.Equals("imap.gmail.com", StringComparison.OrdinalIgnoreCase))
+            Dim configuredDestination = If(destinationAccount Is Nothing, String.Empty,
+                                           AppConfiguration.GetAccountEmailAddress(destinationAccount.ImapHost, destinationAccount.UserName))
             If IsValidEmailAddress(configuredDestination) Then txtForwardDestination.Text = configuredDestination
             RefreshForwardingRules()
         Catch ex As Exception
@@ -414,7 +630,7 @@ l1:
                                         Optional rulesOverride As IEnumerable(Of ForwardingRule) = Nothing) As Integer
         If forwardingRepository Is Nothing OrElse (Not force AndAlso Not cbAutoForward.Checked) Then Return 0
         Try
-            Dim smtpHost = AppConfiguration.GetSmtpHost(eUtil.sThisEmailService)
+            Dim smtpHost = eUtil.sThisSmtpService
             Dim smtpUser = AppConfiguration.GetAccountEmailAddress(eUtil.sThisEmailService, eUtil.sThisEmailUser)
             Dim rulesToApply = If(rulesOverride, forwardingRules)
             Dim count = forwardingService.ForwardMatching(
@@ -973,12 +1189,12 @@ l1:
 
     Private Sub ApplySelectedEmailClientConfiguration()
         If cmbEmailClients.SelectedItem Is Nothing Then Exit Sub
-        For Each emailClient As String In eUtil.lEmailClients
-            Dim parts = emailClient.Split(","c)
-            If parts.Length >= 4 AndAlso parts(0) = cmbEmailClients.SelectedItem.ToString() Then
-                eUtil.sThisEmailService = parts(1)
-                eUtil.sThisEmailUser = parts(2)
-                eUtil.sThisEmailPassword = parts(3)
+        For Each emailClient In eUtil.lEmailClients
+            If emailClient.DisplayName = cmbEmailClients.SelectedItem.ToString() Then
+                eUtil.sThisEmailService = emailClient.ImapHost
+                eUtil.sThisSmtpService = emailClient.SmtpHost
+                eUtil.sThisEmailUser = emailClient.UserName
+                eUtil.sThisEmailPassword = emailClient.GetPassword()
                 Exit For
             End If
         Next

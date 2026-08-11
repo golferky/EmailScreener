@@ -5,9 +5,24 @@ Public NotInheritable Class AppConfiguration
     End Sub
 
     Public Shared Function GetEnvironment(name As String, Optional defaultValue As String = "") As String
+        If String.IsNullOrWhiteSpace(name) Then Return defaultValue
         Dim value = Environment.GetEnvironmentVariable(name)
         If String.IsNullOrWhiteSpace(value) Then Return defaultValue
         Return value.Trim()
+    End Function
+
+    Public Shared Sub SetUserEnvironment(name As String, value As String)
+        If String.IsNullOrWhiteSpace(name) Then Throw New ArgumentException("An environment-variable name is required.", NameOf(name))
+        Environment.SetEnvironmentVariable(name, value, EnvironmentVariableTarget.Process)
+        If OperatingSystem.IsWindows() Then
+            Environment.SetEnvironmentVariable(name, value, EnvironmentVariableTarget.User)
+        End If
+    End Sub
+
+    Public Shared Function BuildPasswordVariable(displayName As String) As String
+        Dim safeName = System.Text.RegularExpressions.Regex.Replace(displayName.Trim().ToUpperInvariant(), "[^A-Z0-9]+", "_").Trim("_"c)
+        If String.IsNullOrWhiteSpace(safeName) Then safeName = "MAIL_ACCOUNT"
+        Return $"EMAILSCREENER_{safeName}_APP_PASSWORD"
     End Function
 
     Public Shared ReadOnly Property SqlitePath As String

@@ -2,7 +2,7 @@
 
 EmailScreener is a VB.NET Windows Forms application that screens unread Gmail and Yahoo messages, stores message metadata in SQLite, and can automatically forward messages from configured senders or domains to Gmail.
 
-The running version is displayed in the form title bar using the `yyyyMMdd.N` build format. Version 20260810.2 adds secure configuration, forwarding rules, sender/date previews, cancellation, confirmed forwarding, and safer authentication-error handling.
+The running version is displayed in the form title bar using the `yyyyMMdd.N` build format. Version 20260811.1 adds SQLite-backed mail-account management while keeping app passwords in per-user environment settings.
 
 ## Secure configuration
 
@@ -20,6 +20,17 @@ Restart EmailScreener after changing environment variables. The optional legacy 
 
 Use provider-specific app passwords rather than primary account passwords. Revoke every credential that was previously committed before using the application again.
 
+## Mail accounts
+
+Open the **Mail accounts** tab to add, edit, enable, disable, or delete Gmail, Yahoo, and custom IMAP accounts. For a second Gmail login:
+
+1. Choose **Gmail** and give the account a unique name such as `Gmail 2`.
+2. Enter the complete Gmail address and that Google account's app password.
+3. Click **Add account**.
+4. Return to **Email screening**, select the new account, and click **Connect to Email**.
+
+Account names, usernames, IMAP/SMTP servers, and enabled status are stored in the `MailAccounts` SQLite table. App passwords are not stored in SQLite: the screen writes each one to a uniquely named Windows user environment variable and the grid shows only `Configured` or `Missing`. Leaving the app-password box blank while editing preserves the existing password. Deleting an account does not delete its password environment variable.
+
 ## Auto forwarding
 
 Open the **Auto forwarding** tab to:
@@ -28,7 +39,7 @@ Open the **Auto forwarding** tab to:
 2. Enter the destination Gmail address.
 3. Enable the rule and automatic forwarding.
 
-The destination is prefilled from `EMAILSCREENER_GMAIL_USER` but remains editable for a one-off destination. Editing it does not change the environment variable or persist the override.
+The destination is prefilled from the first enabled Gmail account but remains editable for a one-off destination. Editing it does not change the saved mail account or persist the override.
 
 Forwarding runs while unread mail is screened. The complete original message is attached to the forwarded message, preserving its content and attachments. Successful sends are recorded by account, folder, IMAP UID, and destination so a message is not forwarded twice.
 

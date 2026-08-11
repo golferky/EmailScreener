@@ -20,8 +20,9 @@ Public Class eUtilities
     'Public dtMarkedRead As DataTable
     Public client As ImapClient
     Public sThisEmailServiceaName As String
-    Public lEmailClients As List(Of String)
+    Public lEmailClients As List(Of MailAccount)
     Public sThisEmailService As String = ""
+    Public sThisSmtpService As String = ""
     Public sThisEmailUser As String = ""
     Public sThisEmailPassword As String = ""
     Public personal As IMailFolder
@@ -57,17 +58,13 @@ Folder,,,N,|
 DateAdded,D,,N,
 "
 
-    Public sYahoo As String = AppConfiguration.BuildAccount("Yahoo", "imap.mail.yahoo.com", "EMAILSCREENER_YAHOO_USER", "EMAILSCREENER_YAHOO_APP_PASSWORD")
-    Public sGmail As String = AppConfiguration.BuildAccount("*Gmail", "imap.gmail.com", "EMAILSCREENER_GMAIL_USER", "EMAILSCREENER_GMAIL_APP_PASSWORD")
     Public conn As SqliteConnection
     Public sqlConn As String = AppConfiguration.SqlConnectionString
     Public sqlitePath As String = AppConfiguration.SqlitePath
     Public sqliteConnStr As String = $"Data Source={AppConfiguration.SqlitePath};"
 
     Sub New()
-        lEmailClients = New List(Of String)
-        lEmailClients.Add(sYahoo)
-        lEmailClients.Add(sGmail)
+        lEmailClients = New List(Of MailAccount)
     End Sub
 
     Sub openconn()
