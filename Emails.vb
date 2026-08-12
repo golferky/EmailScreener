@@ -12,32 +12,61 @@ Public Class Emails
     Dim dtEmails As DataTable
     Public sPgm As String = System.Diagnostics.Process.GetCurrentProcess().ProcessName
     Dim eUtil As New eUtilities
-    Private WithEvents keepAliveTimer As New Windows.Forms.Timer With {.Interval = 240000}
+    Private WithEvents keepAliveTimer As New System.Windows.Forms.Timer With {.Interval = 240000}
     Private keepAliveBusy As Boolean = False
+    Private forwardingRepository As ForwardingRepository
+    Private forwardingService As New ForwardingService()
+    Private forwardingRules As New List(Of ForwardingRule)
+    Private forwardingUiLoading As Boolean
+    Private selectedForwardingRuleId As Integer
+    Private forwardingTabs As TabControl
+    Private forwardingGrid As DataGridView
+    Private WithEvents cbAutoForward As CheckBox
+    Private WithEvents cmbForwardMatchType As ComboBox
+    Private WithEvents txtForwardMatchValue As TextBox
+    Private WithEvents txtForwardDestination As TextBox
+    Private WithEvents cbForwardRuleEnabled As CheckBox
+    Private WithEvents btnSaveForwardRule As Button
+    Private WithEvents btnDeleteForwardRule As Button
+    Private WithEvents btnUseSelectedSender As Button
+    Private WithEvents forwardSearchSince As DateTimePicker
+    Private WithEvents btnScanForwarding As Button
+    Private WithEvents btnForwardPreviewed As Button
+    Private forwardingPreviewGrid As DataGridView
+    Private forwardingPreviewMessages As New Dictionary(Of Integer, MimeKit.MimeMessage)
+    Private forwardingPreviewRule As ForwardingRule
+    Private cancelEmailOperation As Boolean
+    Private cancelForwardingOperation As Boolean
+    Private WithEvents btnCancelEmailOperation As Button
+    Private WithEvents btnCancelForwardingOperation As Button
+    Private mailAccountRepository As MailAccountRepository
+    Private mailAccounts As New List(Of MailAccount)
+    Private selectedMailAccountId As Integer
+    Private mailAccountsGrid As DataGridView
+    Private WithEvents cmbAccountProvider As ComboBox
+    Private WithEvents txtAccountName As TextBox
+    Private WithEvents txtAccountUser As TextBox
+    Private WithEvents txtAccountImap As TextBox
+    Private WithEvents txtAccountSmtp As TextBox
+    Private WithEvents txtAccountPassword As TextBox
+    Private WithEvents cbAccountEnabled As CheckBox
+    Private WithEvents btnSaveMailAccount As Button
+    Private WithEvents btnDeleteMailAccount As Button
+    Private WithEvents btnClearMailAccount As Button
 
     Private Sub Emails_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         loadscreen()
+        InitializeForwardingTab()
         ToolStrip.Visible = False
-        Me.Text = $"Form {Me.CompanyName}-{My.Computer.Name}, Resolution {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}, Menu {Me.Width} x {Me.Height}, Grid {dgvEmails.Width} x {dgvEmails.Height}"
+        UpdateWindowTitle()
 
-        For Each sclient As String In eUtil.lEmailClients
-            cmbEmailClients.Items.Add(sclient.Split(",")(0))
-        Next
-        cmbEmailClients.SelectedIndex = 0
-
-        For Each eclient As String In eUtil.lEmailClients
-            If eclient.Split(",")(0) = cmbEmailClients.SelectedItem Then
-                eUtil.sThisEmailService = eclient.Split(",")(1)
-                eUtil.sThisEmailUser = eclient.Split(",")(2)
-                eUtil.sThisEmailPassword = eclient.Split(",")(3)
-                Exit For
-            End If
-        Next
         If System.IO.File.Exists(eUtil.sqlitePath) Then
             eUtil.openconn()
             eUtil.getdbInfo()
             dtEmails = eUtil.dtEmails
             dgvEmails.DataSource = dtEmails
+            InitializeMailAccountData()
+            InitializeForwardingData()
         Else
             MessageBox.Show("Database not found. Please click Convert button to migrate from SQL Server.", "No Database", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Exit Sub
@@ -67,7 +96,7 @@ Public Class Emails
         Next
 
         Me.Show()
-        tbMailClient.Text = cmbEmailClients.SelectedItem
+        If cmbEmailClients.SelectedItem IsNot Nothing Then tbMailClient.Text = cmbEmailClients.SelectedItem.ToString()
     End Sub
     Sub loadscreen()
         Dim allScreens = Screen.AllScreens
@@ -83,6 +112,8 @@ Public Class Emails
         End If
     End Sub
     Sub GetUnread()
+        cancelEmailOperation = False
+        btnCancelEmailOperation.Enabled = True
         keepAliveBusy = True
         ToolStrip.Visible = True
         Dim imessagecount = 0
@@ -95,6 +126,7 @@ Public Class Emails
 
             Dim j As Integer = 1
 l1:
+            If cancelEmailOperation Then Return
             If Not IsClientConnected() Then
                 client = eUtil.Connect()
                 Application.DoEvents()
@@ -128,6 +160,11 @@ l1:
                     Exit Sub
                 End If
                 For i As Integer = 0 To uids.Count - 1
+                    Application.DoEvents()
+                    If cancelEmailOperation Then
+                        tsStatusText.Text = $"Email screening cancelled after {i} of {uids.Count} messages"
+                        Exit For
+                    End If
                     If i = 0 Then btnSave.Visible = True
                     'resize each col in grid
                     'If i = 0 Then
@@ -149,6 +186,7 @@ l1:
                     If eUtil.UpdateIt(uids1.Id, client.Inbox.FullName, message, If(cbSpam.Checked, True, False)) Then
                         tbSpam.Text += 1
                     End If
+                    ProcessAutoForward(message, uids1.Id, client.Inbox.FullName)
                     'Console.WriteLine("You have {0} unread message(s).", uids.Count - i)
                     'Debug.Print("You have {0} unread message(s).", uids.Count - i)
                     If dtEmails.Rows.Count = 0 Then Continue For
@@ -168,9 +206,13 @@ l1:
                 'client.Disconnect(True)
 
             Catch e As Exception
-                SafeDisconnectClient()
-                Console.WriteLine("Error")
-                GoTo l1
+                If cancelEmailOperation Then
+                    tsStatusText.Text = "Email screening cancelled"
+                Else
+                    SafeDisconnectClient()
+                    Console.WriteLine("Error")
+                    GoTo l1
+                End If
             End Try
 
             j += 1
@@ -181,6 +223,7 @@ l1:
             SafeDisconnectClient()
         Finally
             keepAliveBusy = False
+            btnCancelEmailOperation.Enabled = False
         End Try
         'End Using
         eUtil.LOGIT($"Total Messages Marked: {imessagecount}")
@@ -245,10 +288,646 @@ l1:
         Application.DoEvents()
     End Sub
 
-    Private Sub Resize(sender As Object, e As EventArgs) Handles MyBase.Resize
+    Private Sub InitializeForwardingTab()
+        If forwardingTabs IsNot Nothing Then Exit Sub
+
+        Dim emailTab As New TabPage("Email screening") With {.AutoScroll = True}
+        Dim forwardTab As New TabPage("Auto forwarding")
+        Dim accountsTab As New TabPage("Mail accounts") With {.AutoScroll = True}
+        Dim controlsToMove As New List(Of Control)
+        For Each control As Control In Controls
+            If control IsNot ToolStrip Then controlsToMove.Add(control)
+        Next
+        For Each control In controlsToMove
+            emailTab.Controls.Add(control)
+        Next
+        btnCancelEmailOperation = New Button With {
+            .Location = New Point(755, 42),
+            .Size = New Size(118, 23),
+            .Text = "Cancel screening",
+            .Enabled = False
+        }
+        emailTab.Controls.Add(btnCancelEmailOperation)
+
+        forwardingTabs = New TabControl With {.Dock = DockStyle.Fill}
+        forwardingTabs.TabPages.Add(emailTab)
+        forwardingTabs.TabPages.Add(forwardTab)
+        forwardingTabs.TabPages.Add(accountsTab)
+        Controls.Add(forwardingTabs)
+        forwardingTabs.BringToFront()
+        ToolStrip.BringToFront()
+
+        Dim instructions As New Label With {
+            .AutoSize = False,
+            .Location = New Point(20, 15),
+            .Size = New Size(1200, 38),
+            .Text = "Automatically forward matching unread mail, or scan matching inbox mail since a chosen date. Duplicate sends are prevented."
+        }
+        cbAutoForward = New CheckBox With {
+            .AutoSize = True,
+            .Location = New Point(20, 58),
+            .Text = "Enable automatic forwarding while screening unread mail"
+        }
+        Dim searchSinceLabel As New Label With {.AutoSize = True, .Location = New Point(540, 60), .Text = "Search since"}
+        forwardSearchSince = New DateTimePicker With {
+            .Format = DateTimePickerFormat.Short,
+            .Location = New Point(625, 56),
+            .Size = New Size(125, 23),
+            .Value = Today.AddDays(-7)
+        }
+        btnScanForwarding = New Button With {.Location = New Point(765, 54), .Size = New Size(145, 28), .Text = "Preview matches"}
+        btnForwardPreviewed = New Button With {.Location = New Point(925, 54), .Size = New Size(145, 28), .Text = "Forward previewed", .Enabled = False}
+        btnCancelForwardingOperation = New Button With {.Location = New Point(1085, 54), .Size = New Size(145, 28), .Text = "Cancel operation", .Enabled = False}
+        cmbForwardMatchType = New ComboBox With {
+            .DropDownStyle = ComboBoxStyle.DropDownList,
+            .Location = New Point(20, 112),
+            .Size = New Size(130, 23)
+        }
+        cmbForwardMatchType.Items.AddRange(New Object() {"Sender", "Name or email contains", "Domain"})
+        cmbForwardMatchType.SelectedIndex = 0
+        txtForwardMatchValue = New TextBox With {.Location = New Point(165, 112), .Size = New Size(290, 23)}
+        txtForwardDestination = New TextBox With {.Location = New Point(470, 112), .Size = New Size(290, 23)}
+        cbForwardRuleEnabled = New CheckBox With {.AutoSize = True, .Location = New Point(775, 114), .Text = "Rule enabled", .Checked = True}
+        btnSaveForwardRule = New Button With {.Location = New Point(885, 109), .Size = New Size(105, 28), .Text = "Add rule"}
+        btnDeleteForwardRule = New Button With {.Location = New Point(1000, 109), .Size = New Size(105, 28), .Text = "Delete rule", .Enabled = False}
+        btnUseSelectedSender = New Button With {.Location = New Point(1115, 109), .Size = New Size(150, 28), .Text = "Use selected sender"}
+
+        Dim matchLabel As New Label With {.AutoSize = True, .Location = New Point(20, 91), .Text = "Match type"}
+        Dim valueLabel As New Label With {.AutoSize = True, .Location = New Point(165, 91), .Text = "Sender email, name, or domain"}
+        Dim destinationLabel As New Label With {.AutoSize = True, .Location = New Point(470, 91), .Text = "Destination Gmail address"}
+
+        forwardingGrid = New DataGridView With {
+            .Location = New Point(20, 155),
+            .Size = New Size(1245, 165),
+            .Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right,
+            .AllowUserToAddRows = False,
+            .AllowUserToDeleteRows = False,
+            .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            .ReadOnly = True,
+            .RowHeadersVisible = False,
+            .SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            .MultiSelect = False
+        }
+        AddHandler forwardingGrid.CellClick, AddressOf forwardingGrid_CellClick
+
+        Dim previewLabel As New Label With {.AutoSize = True, .Location = New Point(20, 338), .Text = "Preview — no messages are sent until you click Forward previewed"}
+        forwardingPreviewGrid = New DataGridView With {
+            .Location = New Point(20, 360),
+            .Size = New Size(1245, 295),
+            .Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right,
+            .AllowUserToAddRows = False,
+            .AllowUserToDeleteRows = False,
+            .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            .ReadOnly = True,
+            .RowHeadersVisible = False,
+            .SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            .MultiSelect = True
+        }
+
+        forwardTab.Controls.AddRange(New Control() {
+            instructions, cbAutoForward, searchSinceLabel, forwardSearchSince, btnScanForwarding, btnForwardPreviewed, btnCancelForwardingOperation,
+            matchLabel, cmbForwardMatchType, valueLabel, txtForwardMatchValue,
+            destinationLabel, txtForwardDestination, cbForwardRuleEnabled, btnSaveForwardRule,
+            btnDeleteForwardRule, btnUseSelectedSender, forwardingGrid, previewLabel, forwardingPreviewGrid
+        })
+        InitializeMailAccountsTab(accountsTab)
+    End Sub
+
+    Private Sub InitializeMailAccountsTab(accountsTab As TabPage)
+        Dim instructions As New Label With {
+            .AutoSize = False,
+            .Location = New Point(20, 15),
+            .Size = New Size(1210, 42),
+            .Text = "Add Gmail, Yahoo, or custom IMAP accounts. Account details are saved in SQLite; app passwords are saved in your Windows user environment and are never stored in the database."
+        }
+        Dim providerLabel As New Label With {.AutoSize = True, .Location = New Point(20, 72), .Text = "Provider"}
+        cmbAccountProvider = New ComboBox With {
+            .DropDownStyle = ComboBoxStyle.DropDownList,
+            .Location = New Point(20, 94),
+            .Size = New Size(145, 23)
+        }
+        cmbAccountProvider.Items.AddRange(New Object() {"Gmail", "Yahoo", "Custom"})
+
+        Dim nameLabel As New Label With {.AutoSize = True, .Location = New Point(180, 72), .Text = "Account name"}
+        txtAccountName = New TextBox With {.Location = New Point(180, 94), .Size = New Size(190, 23)}
+        Dim userLabel As New Label With {.AutoSize = True, .Location = New Point(385, 72), .Text = "Email address / username"}
+        txtAccountUser = New TextBox With {.Location = New Point(385, 94), .Size = New Size(260, 23)}
+        Dim passwordLabel As New Label With {.AutoSize = True, .Location = New Point(660, 72), .Text = "App password (blank keeps existing)"}
+        txtAccountPassword = New TextBox With {
+            .Location = New Point(660, 94),
+            .Size = New Size(225, 23),
+            .UseSystemPasswordChar = True
+        }
+        cbAccountEnabled = New CheckBox With {.AutoSize = True, .Location = New Point(900, 97), .Text = "Enabled", .Checked = True}
+
+        Dim imapLabel As New Label With {.AutoSize = True, .Location = New Point(20, 132), .Text = "IMAP server"}
+        txtAccountImap = New TextBox With {.Location = New Point(20, 154), .Size = New Size(270, 23)}
+        Dim smtpLabel As New Label With {.AutoSize = True, .Location = New Point(305, 132), .Text = "SMTP server"}
+        txtAccountSmtp = New TextBox With {.Location = New Point(305, 154), .Size = New Size(270, 23)}
+        btnSaveMailAccount = New Button With {.Location = New Point(600, 150), .Size = New Size(125, 28), .Text = "Add account"}
+        btnDeleteMailAccount = New Button With {.Location = New Point(740, 150), .Size = New Size(125, 28), .Text = "Delete account", .Enabled = False}
+        btnClearMailAccount = New Button With {.Location = New Point(880, 150), .Size = New Size(125, 28), .Text = "New account"}
+
+        Dim passwordNote As New Label With {
+            .AutoSize = False,
+            .Location = New Point(20, 192),
+            .Size = New Size(1210, 38),
+            .Text = "For Gmail and Yahoo, use an app password rather than the normal account password. Existing passwords are never displayed."
+        }
+        mailAccountsGrid = New DataGridView With {
+            .Location = New Point(20, 235),
+            .Size = New Size(1245, 380),
+            .Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right,
+            .AllowUserToAddRows = False,
+            .AllowUserToDeleteRows = False,
+            .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            .ReadOnly = True,
+            .RowHeadersVisible = False,
+            .SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            .MultiSelect = False
+        }
+        AddHandler mailAccountsGrid.CellClick, AddressOf mailAccountsGrid_CellClick
+
+        accountsTab.Controls.AddRange(New Control() {
+            instructions, providerLabel, cmbAccountProvider, nameLabel, txtAccountName, userLabel, txtAccountUser,
+            passwordLabel, txtAccountPassword, cbAccountEnabled, imapLabel, txtAccountImap, smtpLabel, txtAccountSmtp,
+            btnSaveMailAccount, btnDeleteMailAccount, btnClearMailAccount, passwordNote, mailAccountsGrid
+        })
+        cmbAccountProvider.SelectedIndex = 0
+    End Sub
+
+    Private Sub InitializeMailAccountData()
+        Try
+            mailAccountRepository = New MailAccountRepository(eUtil.sqlitePath)
+            RefreshMailAccounts()
+            ClearMailAccountEditor()
+        Catch ex As Exception
+            UpdatetsStatusText($"Mail account setup failed: {ex.Message}")
+        End Try
+    End Sub
+
+    Private Sub RefreshMailAccounts(Optional preferredName As String = Nothing)
+        If mailAccountRepository Is Nothing Then Exit Sub
+        mailAccounts = mailAccountRepository.LoadAccounts()
+        mailAccountsGrid.DataSource = Nothing
+        mailAccountsGrid.DataSource = mailAccounts
+        If mailAccountsGrid.Columns.Contains("Id") Then mailAccountsGrid.Columns("Id").Visible = False
+        If mailAccountsGrid.Columns.Contains("PasswordEnvironmentVariable") Then mailAccountsGrid.Columns("PasswordEnvironmentVariable").Visible = False
+
+        Dim previousSelection = If(preferredName, If(cmbEmailClients.SelectedItem?.ToString(), String.Empty))
+        eUtil.lEmailClients = mailAccounts.Where(Function(account) account.Enabled).ToList()
+        cmbEmailClients.Items.Clear()
+        For Each account In eUtil.lEmailClients
+            cmbEmailClients.Items.Add(account.DisplayName)
+        Next
+        If Not String.IsNullOrWhiteSpace(previousSelection) AndAlso cmbEmailClients.Items.Contains(previousSelection) Then
+            cmbEmailClients.SelectedItem = previousSelection
+        ElseIf cmbEmailClients.Items.Count > 0 Then
+            cmbEmailClients.SelectedIndex = 0
+        End If
+        ApplySelectedEmailClientConfiguration()
+    End Sub
+
+    Private Sub mailAccountsGrid_CellClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 Then Exit Sub
+        Dim account = TryCast(mailAccountsGrid.Rows(e.RowIndex).DataBoundItem, MailAccount)
+        If account Is Nothing Then Exit Sub
+        selectedMailAccountId = account.Id
+        txtAccountName.Text = account.DisplayName
+        txtAccountUser.Text = account.UserName
+        txtAccountImap.Text = account.ImapHost
+        txtAccountSmtp.Text = account.SmtpHost
+        txtAccountPassword.Clear()
+        cbAccountEnabled.Checked = account.Enabled
+        If account.ImapHost.Equals("imap.gmail.com", StringComparison.OrdinalIgnoreCase) Then
+            cmbAccountProvider.SelectedItem = "Gmail"
+        ElseIf account.ImapHost.Equals("imap.mail.yahoo.com", StringComparison.OrdinalIgnoreCase) Then
+            cmbAccountProvider.SelectedItem = "Yahoo"
+        Else
+            cmbAccountProvider.SelectedItem = "Custom"
+        End If
+        btnSaveMailAccount.Text = "Update account"
+        btnDeleteMailAccount.Enabled = True
+    End Sub
+
+    Private Sub cmbAccountProvider_SelectedIndexChanged(sender As Object, e As EventArgs) Handles cmbAccountProvider.SelectedIndexChanged
+        If txtAccountImap Is Nothing OrElse txtAccountSmtp Is Nothing Then Exit Sub
+        Select Case cmbAccountProvider.Text
+            Case "Gmail"
+                txtAccountImap.Text = "imap.gmail.com"
+                txtAccountSmtp.Text = "smtp.gmail.com"
+            Case "Yahoo"
+                txtAccountImap.Text = "imap.mail.yahoo.com"
+                txtAccountSmtp.Text = "smtp.mail.yahoo.com"
+        End Select
+    End Sub
+
+    Private Sub btnSaveMailAccount_Click(sender As Object, e As EventArgs) Handles btnSaveMailAccount.Click
+        If mailAccountRepository Is Nothing Then Exit Sub
+        Dim displayName = txtAccountName.Text.Trim()
+        Dim userName = txtAccountUser.Text.Trim()
+        Dim imapHost = txtAccountImap.Text.Trim()
+        Dim smtpHost = txtAccountSmtp.Text.Trim()
+        If String.IsNullOrWhiteSpace(displayName) OrElse String.IsNullOrWhiteSpace(userName) OrElse
+           String.IsNullOrWhiteSpace(imapHost) OrElse String.IsNullOrWhiteSpace(smtpHost) Then
+            MessageBox.Show("Enter an account name, email address, IMAP server, and SMTP server.", "Mail account", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+
+        Dim existing = mailAccounts.FirstOrDefault(Function(account) account.Id = selectedMailAccountId)
+        Dim passwordVariable = If(existing?.PasswordEnvironmentVariable, AppConfiguration.BuildPasswordVariable($"{displayName}_{userName}"))
+        If selectedMailAccountId = 0 AndAlso String.IsNullOrWhiteSpace(txtAccountPassword.Text) Then
+            MessageBox.Show("Enter an app password for the new account.", "Mail account", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+
+        Try
+            If Not String.IsNullOrWhiteSpace(txtAccountPassword.Text) Then
+                AppConfiguration.SetUserEnvironment(passwordVariable, txtAccountPassword.Text.Replace(" ", String.Empty))
+            End If
+            Dim account As New MailAccount With {
+                .Id = selectedMailAccountId,
+                .DisplayName = displayName,
+                .UserName = userName,
+                .ImapHost = imapHost,
+                .SmtpHost = smtpHost,
+                .PasswordEnvironmentVariable = passwordVariable,
+                .Enabled = cbAccountEnabled.Checked
+            }
+            mailAccountRepository.SaveAccount(account)
+            If IsClientConnected() Then SafeDisconnectClient()
+            btnConnect.Visible = True
+            RefreshMailAccounts(displayName)
+            ClearMailAccountEditor()
+            UpdatetsStatusText($"Mail account '{displayName}' saved")
+        Catch ex As Exception
+            MessageBox.Show($"The mail account could not be saved: {ex.Message}", "Mail account", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+
+    Private Sub btnDeleteMailAccount_Click(sender As Object, e As EventArgs) Handles btnDeleteMailAccount.Click
+        If mailAccountRepository Is Nothing OrElse selectedMailAccountId = 0 Then Exit Sub
+        Dim account = mailAccounts.FirstOrDefault(Function(item) item.Id = selectedMailAccountId)
+        If account Is Nothing Then Exit Sub
+        If MessageBox.Show($"Delete the mail account '{account.DisplayName}'? Its app-password environment setting will not be deleted.",
+                           "Delete mail account", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Exit Sub
+        If IsClientConnected() Then SafeDisconnectClient()
+        mailAccountRepository.DeleteAccount(account.Id)
+        btnConnect.Visible = True
+        RefreshMailAccounts()
+        ClearMailAccountEditor()
+        UpdatetsStatusText($"Mail account '{account.DisplayName}' deleted")
+    End Sub
+
+    Private Sub btnClearMailAccount_Click(sender As Object, e As EventArgs) Handles btnClearMailAccount.Click
+        ClearMailAccountEditor()
+    End Sub
+
+    Private Sub ClearMailAccountEditor()
+        selectedMailAccountId = 0
+        If cmbAccountProvider IsNot Nothing Then cmbAccountProvider.SelectedItem = "Gmail"
+        txtAccountName?.Clear()
+        txtAccountUser?.Clear()
+        txtAccountPassword?.Clear()
+        If cbAccountEnabled IsNot Nothing Then cbAccountEnabled.Checked = True
+        If btnSaveMailAccount IsNot Nothing Then btnSaveMailAccount.Text = "Add account"
+        If btnDeleteMailAccount IsNot Nothing Then btnDeleteMailAccount.Enabled = False
+    End Sub
+
+    Private Sub InitializeForwardingData()
+        Try
+            forwardingRepository = New ForwardingRepository(eUtil.sqlitePath)
+            forwardingUiLoading = True
+            cbAutoForward.Checked = forwardingRepository.GetAutoForwardEnabled()
+            Dim savedDate = forwardingRepository.GetSetting("ForwardSearchSinceDate")
+            Dim parsedDate As DateTime
+            If DateTime.TryParse(savedDate, parsedDate) Then forwardSearchSince.Value = parsedDate
+            Dim destinationAccount = mailAccounts.FirstOrDefault(Function(account) account.Enabled AndAlso account.ImapHost.Equals("imap.gmail.com", StringComparison.OrdinalIgnoreCase))
+            Dim configuredDestination = If(destinationAccount Is Nothing, String.Empty,
+                                           AppConfiguration.GetAccountEmailAddress(destinationAccount.ImapHost, destinationAccount.UserName))
+            If IsValidEmailAddress(configuredDestination) Then txtForwardDestination.Text = configuredDestination
+            RefreshForwardingRules()
+        Catch ex As Exception
+            cbAutoForward.Enabled = False
+            UpdatetsStatusText($"Forwarding setup failed: {ex.Message}")
+        Finally
+            forwardingUiLoading = False
+        End Try
+    End Sub
+
+    Private Sub RefreshForwardingRules()
+        If forwardingRepository Is Nothing Then Exit Sub
+        forwardingRules = forwardingRepository.LoadRules()
+        forwardingGrid.DataSource = Nothing
+        forwardingGrid.DataSource = forwardingRules
+        If forwardingGrid.Columns.Contains("Id") Then forwardingGrid.Columns("Id").Visible = False
+    End Sub
+
+    Private Function ProcessAutoForward(message As MimeKit.MimeMessage,
+                                        uid As Integer,
+                                        folder As String,
+                                        Optional force As Boolean = False,
+                                        Optional rulesOverride As IEnumerable(Of ForwardingRule) = Nothing) As Integer
+        If forwardingRepository Is Nothing OrElse (Not force AndAlso Not cbAutoForward.Checked) Then Return 0
+        Try
+            Dim smtpHost = eUtil.sThisSmtpService
+            Dim smtpUser = AppConfiguration.GetAccountEmailAddress(eUtil.sThisEmailService, eUtil.sThisEmailUser)
+            Dim rulesToApply = If(rulesOverride, forwardingRules)
+            Dim count = forwardingService.ForwardMatching(
+                message,
+                uid,
+                cmbEmailClients.SelectedItem.ToString(),
+                folder,
+                smtpHost,
+                smtpUser,
+                eUtil.sThisEmailPassword,
+                rulesToApply,
+                forwardingRepository)
+            If count > 0 Then eUtil.LOGIT($"Auto-forwarded UID {uid} to {count} destination(s)")
+            Return count
+        Catch ex As Exception
+            eUtil.LOGIT($"Auto-forward failed for UID {uid}: {ex.Message}", True)
+            UpdatetsStatusText($"Auto-forward failed for UID {uid}: {ex.Message}")
+            Return 0
+        End Try
+    End Function
+
+    Private Sub cbAutoForward_CheckedChanged(sender As Object, e As EventArgs) Handles cbAutoForward.CheckedChanged
+        If forwardingUiLoading OrElse forwardingRepository Is Nothing Then Exit Sub
+        forwardingRepository.SetAutoForwardEnabled(cbAutoForward.Checked)
+    End Sub
+
+    Private Sub btnCancelEmailOperation_Click(sender As Object, e As EventArgs) Handles btnCancelEmailOperation.Click
+        cancelEmailOperation = True
+        btnCancelEmailOperation.Enabled = False
+        UpdatetsStatusText("Cancelling email screening after the current message...")
+    End Sub
+
+    Private Sub btnCancelForwardingOperation_Click(sender As Object, e As EventArgs) Handles btnCancelForwardingOperation.Click
+        cancelForwardingOperation = True
+        btnCancelForwardingOperation.Enabled = False
+        UpdatetsStatusText("Cancelling the forwarding operation after the current message...")
+    End Sub
+
+    Private Sub forwardSearchSince_ValueChanged(sender As Object, e As EventArgs) Handles forwardSearchSince.ValueChanged
+        If forwardingUiLoading OrElse forwardingRepository Is Nothing Then Exit Sub
+        forwardingRepository.SetSetting("ForwardSearchSinceDate", forwardSearchSince.Value.Date.ToString("yyyy-MM-dd"))
+    End Sub
+
+    Private Sub btnScanForwarding_Click(sender As Object, e As EventArgs) Handles btnScanForwarding.Click
+        If forwardingRepository Is Nothing Then Exit Sub
+        If Not ValidateMatchCriteria() Then Exit Sub
+
+        forwardingPreviewRule = New ForwardingRule With {
+            .MatchType = cmbForwardMatchType.Text,
+            .MatchValue = txtForwardMatchValue.Text.Trim(),
+            .Enabled = True
+        }
+
+        ApplySelectedEmailClientConfiguration()
+        If Not IsClientConnected() Then client = eUtil.Connect()
+        If Not IsClientConnected() Then Exit Sub
+        If Not client.IsAuthenticated Then eUtil.Authenticate()
+        If Not client.IsAuthenticated Then
+            MessageBox.Show("Email authentication failed.", "Scan inbox", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Exit Sub
+        End If
+        tbMailClient.Text = cmbEmailClients.SelectedItem.ToString()
+        tbMailClient.BackColor = Color.LightGreen
+        If Not client.Inbox.IsOpen Then client.Inbox.Open(FolderAccess.ReadOnly)
+
+        Dim sinceDate = forwardSearchSince.Value.Date
+        forwardingRepository.SetSetting("ForwardSearchSinceDate", sinceDate.ToString("yyyy-MM-dd"))
+        Dim serverQuery = BuildForwardingSearchQuery(forwardingPreviewRule, sinceDate)
+        Dim scanUids = client.Inbox.Search(serverQuery).Reverse().ToList()
+        If scanUids.Count = 0 Then
+            MessageBox.Show($"No likely matches found in the inbox since {sinceDate:d}.", "Preview matches", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Exit Sub
+        End If
+
+        cancelForwardingOperation = False
+        btnScanForwarding.Enabled = False
+        btnForwardPreviewed.Enabled = False
+        btnCancelForwardingOperation.Enabled = True
+        forwardingPreviewMessages.Clear()
+        Dim previewTable As New DataTable()
+        previewTable.Columns.Add("Sender name")
+        previewTable.Columns.Add("Email address")
+        previewTable.Columns.Add("Message count", GetType(Integer))
+        previewTable.Columns.Add("Oldest", GetType(DateTimeOffset))
+        previewTable.Columns.Add("Newest", GetType(DateTimeOffset))
+        Dim summaryRows As New Dictionary(Of String, DataRow)(StringComparer.OrdinalIgnoreCase)
+        tsProgressBar.Value = 0
+        tsProgressBar.Maximum = Math.Max(1, scanUids.Count)
+        ToolStrip.Visible = True
+        Try
+            For Each uid In scanUids
+                Application.DoEvents()
+                If cancelForwardingOperation Then Exit For
+                Dim message = client.Inbox.GetMessage(uid)
+                If ForwardingService.RuleMatches(forwardingPreviewRule, message) Then
+                    forwardingPreviewMessages(CInt(uid.Id)) = message
+                    Dim mailbox = message.From.Mailboxes.FirstOrDefault()
+                    If mailbox IsNot Nothing Then
+                        Dim address = mailbox.Address
+                        If Not summaryRows.ContainsKey(address) Then
+                            Dim summaryRow = previewTable.NewRow()
+                            summaryRow("Sender name") = If(String.IsNullOrWhiteSpace(mailbox.Name), "(no display name)", mailbox.Name)
+                            summaryRow("Email address") = address
+                            summaryRow("Message count") = 1
+                            summaryRow("Oldest") = message.Date
+                            summaryRow("Newest") = message.Date
+                            previewTable.Rows.Add(summaryRow)
+                            summaryRows(address) = summaryRow
+                        Else
+                            Dim summaryRow = summaryRows(address)
+                            summaryRow("Message count") = CInt(summaryRow("Message count")) + 1
+                            If message.Date < DirectCast(summaryRow("Oldest"), DateTimeOffset) Then summaryRow("Oldest") = message.Date
+                            If message.Date > DirectCast(summaryRow("Newest"), DateTimeOffset) Then summaryRow("Newest") = message.Date
+                        End If
+                    End If
+                End If
+                tsProgressBar.Value += 1
+                UpdatetsStatusText($"Previewing {tsProgressBar.Value} of {scanUids.Count}: {message.From} — {message.Subject}")
+            Next
+            forwardingPreviewGrid.DataSource = previewTable
+            btnForwardPreviewed.Enabled = forwardingPreviewMessages.Count > 0
+            Dim previewResult = If(cancelForwardingOperation, "Preview cancelled", "Preview complete")
+            MessageBox.Show($"{previewResult}. Found {forwardingPreviewMessages.Count} matching message(s) from {summaryRows.Count} email address(es). Nothing was sent.",
+                            "Preview matches", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            eUtil.LOGIT($"Forwarding preview failed: {ex.Message}", True)
+            MessageBox.Show($"Preview failed: {ex.Message}", "Preview matches", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            btnScanForwarding.Enabled = True
+            btnCancelForwardingOperation.Enabled = False
+        End Try
+    End Sub
+
+    Private Shared Function BuildForwardingSearchQuery(rule As ForwardingRule, sinceDate As DateTime) As SearchQuery
+        Dim query As SearchQuery = SearchQuery.DeliveredAfter(sinceDate.AddDays(-1))
+        If String.Equals(rule.MatchType, "Name or email contains", StringComparison.OrdinalIgnoreCase) OrElse
+           String.Equals(rule.MatchType, "Sender name", StringComparison.OrdinalIgnoreCase) Then
+            Dim nameTokens = System.Text.RegularExpressions.Regex.Split(rule.MatchValue.Trim(), "\W+").
+                Where(Function(token) Not String.IsNullOrWhiteSpace(token))
+            For Each token In nameTokens
+                query = query.And(SearchQuery.FromContains(token))
+            Next
+        Else
+            query = query.And(SearchQuery.FromContains(rule.MatchValue.Trim().TrimStart("@"c)))
+        End If
+        Return query
+    End Function
+
+    Private Sub btnForwardPreviewed_Click(sender As Object, e As EventArgs) Handles btnForwardPreviewed.Click
+        If forwardingRepository Is Nothing OrElse forwardingPreviewRule Is Nothing OrElse forwardingPreviewMessages.Count = 0 Then Exit Sub
+        Dim destination = txtForwardDestination.Text.Trim()
+        If Not ValidateGmailDestination(destination) Then Exit Sub
+        If MessageBox.Show($"Forward all {forwardingPreviewMessages.Count} previewed message(s) to {destination}?",
+                           "Forward previewed", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Exit Sub
+
+        Dim previewSendRule As New ForwardingRule With {
+            .MatchType = forwardingPreviewRule.MatchType,
+            .MatchValue = forwardingPreviewRule.MatchValue,
+            .Destination = destination,
+            .Enabled = True
+        }
+        Dim previewRules As New List(Of ForwardingRule) From {previewSendRule}
+        cancelForwardingOperation = False
+        btnForwardPreviewed.Enabled = False
+        btnCancelForwardingOperation.Enabled = True
+        tsProgressBar.Value = 0
+        tsProgressBar.Maximum = Math.Max(1, forwardingPreviewMessages.Count)
+        Dim forwardedCount = 0
+        Try
+            For Each previewMessage In forwardingPreviewMessages
+                Application.DoEvents()
+                If cancelForwardingOperation Then Exit For
+                forwardedCount += ProcessAutoForward(previewMessage.Value, previewMessage.Key, client.Inbox.FullName, True, previewRules)
+                tsProgressBar.Value += 1
+                UpdatetsStatusText($"Forwarding preview {tsProgressBar.Value} of {forwardingPreviewMessages.Count}")
+            Next
+            Dim forwardingResult = If(cancelForwardingOperation, "Forwarding cancelled", "Forwarding complete")
+            MessageBox.Show($"{forwardingResult}. {forwardedCount} message(s) sent; previously sent messages were skipped.",
+                            "Forward previewed", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            eUtil.LOGIT($"Forward preview failed: {ex.Message}", True)
+            MessageBox.Show($"Forwarding failed: {ex.Message}", "Forward previewed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            btnForwardPreviewed.Enabled = True
+            btnCancelForwardingOperation.Enabled = False
+        End Try
+    End Sub
+
+    Private Sub btnSaveForwardRule_Click(sender As Object, e As EventArgs) Handles btnSaveForwardRule.Click
+        If forwardingRepository Is Nothing Then Exit Sub
+        If Not ValidateMatchCriteria() Then Exit Sub
+        Dim matchValue = txtForwardMatchValue.Text.Trim()
+        Dim destination = txtForwardDestination.Text.Trim()
+        If Not ValidateGmailDestination(destination) Then Exit Sub
+
+        Dim rule As New ForwardingRule With {
+            .Id = selectedForwardingRuleId,
+            .MatchType = cmbForwardMatchType.Text,
+            .MatchValue = matchValue,
+            .Destination = destination,
+            .Enabled = cbForwardRuleEnabled.Checked
+        }
+        selectedForwardingRuleId = forwardingRepository.SaveRule(rule)
+        RefreshForwardingRules()
+        btnSaveForwardRule.Text = "Update rule"
+        btnDeleteForwardRule.Enabled = True
+    End Sub
+
+    Private Sub btnDeleteForwardRule_Click(sender As Object, e As EventArgs) Handles btnDeleteForwardRule.Click
+        If forwardingRepository Is Nothing OrElse selectedForwardingRuleId = 0 Then Exit Sub
+        If MessageBox.Show("Delete the selected forwarding rule?", "Forwarding rule", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Exit Sub
+        forwardingRepository.DeleteRule(selectedForwardingRuleId)
+        ClearForwardingEditor()
+        RefreshForwardingRules()
+    End Sub
+
+    Private Sub btnUseSelectedSender_Click(sender As Object, e As EventArgs) Handles btnUseSelectedSender.Click
+        If dgvEmails.CurrentRow Is Nothing OrElse Not dgvEmails.Columns.Contains("From") Then
+            MessageBox.Show("Select an email on the Email screening tab first.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Exit Sub
+        End If
+        txtForwardMatchValue.Text = ExtractEmailAddress(Convert.ToString(dgvEmails.CurrentRow.Cells("From").Value))
+        cmbForwardMatchType.SelectedItem = "Sender"
+    End Sub
+
+    Private Sub forwardingGrid_CellClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 Then Exit Sub
+        Dim rule = TryCast(forwardingGrid.Rows(e.RowIndex).DataBoundItem, ForwardingRule)
+        If rule Is Nothing Then Exit Sub
+        selectedForwardingRuleId = rule.Id
+        cmbForwardMatchType.SelectedItem = rule.MatchType
+        txtForwardMatchValue.Text = rule.MatchValue
+        txtForwardDestination.Text = rule.Destination
+        cbForwardRuleEnabled.Checked = rule.Enabled
+        btnSaveForwardRule.Text = "Update rule"
+        btnDeleteForwardRule.Enabled = True
+    End Sub
+
+    Private Sub ClearForwardingEditor()
+        selectedForwardingRuleId = 0
+        cmbForwardMatchType.SelectedIndex = 0
+        txtForwardMatchValue.Clear()
+        txtForwardDestination.Clear()
+        cbForwardRuleEnabled.Checked = True
+        btnSaveForwardRule.Text = "Add rule"
+        btnDeleteForwardRule.Enabled = False
+    End Sub
+
+    Private Shared Function IsValidEmailAddress(value As String) As Boolean
+        Try
+            Dim address As New System.Net.Mail.MailAddress(value)
+            Return String.Equals(address.Address, value, StringComparison.OrdinalIgnoreCase)
+        Catch ex As FormatException
+            Return False
+        End Try
+    End Function
+
+    Private Function ValidateMatchCriteria() As Boolean
+        Dim matchValue = txtForwardMatchValue.Text.Trim()
+        If String.IsNullOrWhiteSpace(matchValue) Then
+            MessageBox.Show("Enter a sender email address, sender name, or domain.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return False
+        End If
+
+        If cmbForwardMatchType.Text = "Sender" AndAlso Not IsValidEmailAddress(matchValue) Then
+            cmbForwardMatchType.SelectedItem = "Name or email contains"
+        End If
+        Return True
+    End Function
+
+    Private Shared Function ValidateGmailDestination(destination As String) As Boolean
+        If Not IsValidEmailAddress(destination) Then
+            MessageBox.Show("Enter a valid destination Gmail address.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return False
+        End If
+        If Not destination.EndsWith("@gmail.com", StringComparison.OrdinalIgnoreCase) AndAlso
+           Not destination.EndsWith("@googlemail.com", StringComparison.OrdinalIgnoreCase) Then
+            MessageBox.Show("The forwarding destination must be a Gmail address.", "Forwarding rule", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return False
+        End If
+        Return True
+    End Function
+
+    Private Shared Function ExtractEmailAddress(value As String) As String
+        Dim match = System.Text.RegularExpressions.Regex.Match(value, "[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+        If match.Success Then Return match.Value
+        Return value.Trim()
+    End Function
+
+    Private Sub Emails_Resize(sender As Object, e As EventArgs) Handles MyBase.Resize
         'rs.ResizeAllControls(Me)
         'Me.Text = String.Format("Form {7}-{0}, Resolution {1} x {2}, Menu {3} x {4}, Grid {5} x {6}", My.Computer.Name, Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Width, Me.Width, Me.Height, dgvEmails.Width, dgvEmails.Height, Me)
-        Me.Text = $"Form {Me.Name}-{My.Computer.Name}, Resolution {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}, Menu {Me.Width} x {Me.Height}, Grid {dgvEmails.Width} x {dgvEmails.Height}"
+        UpdateWindowTitle()
+    End Sub
+
+    Private Sub UpdateWindowTitle()
+        Me.Text = $"EmailScreener v{Application.ProductVersion} — {My.Computer.Name} — {Screen.PrimaryScreen.Bounds.Width} x {Screen.PrimaryScreen.Bounds.Height}"
     End Sub
 
     'Private Sub dgvEmails_CellDoubleClick(sender As Object, e As DataGridViewCellEventArgs) Handles dgvEmails.CellDoubleClick
@@ -307,7 +986,7 @@ l1:
         Dim col = sender
         If col.currentcell.OwningColumn.Name = "Spam" Then
             Dim mbr = MsgBox($"Changing email to Spam {dgvEmails.Rows(e.RowIndex).Cells("Domain").Value}-{dgvEmails.Rows(e.RowIndex).Cells("Sender").Value} ", vbOKCancel)
-            If mbr.Ok Then
+            If mbr = MsgBoxResult.Ok Then
                 'col.currentcell.value = DBNull.Value
                 col.currentcell.value = True
             End If
@@ -414,11 +1093,22 @@ l1:
         End If
         ToolStrip.Visible = True
 
-        UpdatetsStatusText(eUtil.Authenticate)
+        Dim authenticationStatus = eUtil.Authenticate()
+        UpdatetsStatusText(authenticationStatus)
+        If Not client.IsAuthenticated Then
+            tbMailClient.BackColor = Color.Red
+            MessageBox.Show(authenticationStatus & vbCrLf & vbCrLf &
+                            "Verify the selected account's EMAILSCREENER user and app-password environment variables, then restart Visual Studio.",
+                            "Email authentication failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            SafeDisconnectClient()
+            btnConnect.Visible = True
+            Exit Sub
+        End If
         UpdatetsStatusText(eUtil.OpenInbox)
         eUtil.SetupFolders()
         If IsClientConnected() Then
             tbMailClient.BackColor = Color.LightGreen
+            tbMailClient.Text = cmbEmailClients.SelectedItem.ToString()
             btnConnect.Visible = False
             StartKeepAlive()
             btnRefreshGrid_Click(sender, e)
@@ -486,7 +1176,6 @@ l1:
     End Sub
 
     Private Sub cmbEmailClients_SelectedIndexChanged(sender As Object, e As EventArgs) Handles cmbEmailClients.SelectedIndexChanged
-        Dim x = ""
         If tbMailClient.Text <> "" Then
             If cmbEmailClients.SelectedItem <> tbMailClient.Text Then
                 If IsClientConnected() Then
@@ -495,7 +1184,20 @@ l1:
                 End If
             End If
         End If
+        ApplySelectedEmailClientConfiguration()
+    End Sub
 
+    Private Sub ApplySelectedEmailClientConfiguration()
+        If cmbEmailClients.SelectedItem Is Nothing Then Exit Sub
+        For Each emailClient In eUtil.lEmailClients
+            If emailClient.DisplayName = cmbEmailClients.SelectedItem.ToString() Then
+                eUtil.sThisEmailService = emailClient.ImapHost
+                eUtil.sThisSmtpService = emailClient.SmtpHost
+                eUtil.sThisEmailUser = emailClient.UserName
+                eUtil.sThisEmailPassword = emailClient.GetPassword()
+                Exit For
+            End If
+        Next
     End Sub
 
     Private Sub dgvEmails_CellEnter(sender As Object, e As DataGridViewCellEventArgs) Handles dgvEmails.CellEnter
